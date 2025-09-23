@@ -220,6 +220,7 @@ def test_compute_metrics():
 """STREAMLIT UI"""
 
 import pandas as pd
+!pip install streamlit
 import streamlit as st
 from wearable.core import read_csv, validate_and_clean, compute_metrics
 
