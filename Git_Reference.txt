@@ -1,0 +1,66 @@
+###############################################################################
+# git_reference.txt
+# Repository: VitExMachina / Wearable_Sensor_
+# Purpose: Reference key files / commits / instructions for collaborators
+###############################################################################
+
+Repository URL:
+https://github.com/VitExMachina/Wearable_Sensor_
+
+Main Branch: main
+
+Latest Commit Summary:
+(At the time of reference) — 4 commits total. :contentReference[oaicite:0]{index=0}
+
+Languages Used:
+- Python scripts (.py)
+- Jupyter Notebook (.ipynb)
+- Markdown (README)
+
+Primary Files:
+1. README.md
+   - This file with project overview, setup instructions, and context.
+
+2. wearable_sensor_draft_code.ipynb
+   - A Jupyter notebook version of your early analysis / prototyping.
+
+3. wearable_sensor_draft_code.py
+   - Python script version of core logic (data ingest / processing).
+
+Branches & Tags:
+- main (only branch visible) :contentReference[oaicite:1]{index=1}
+- No tags or releases currently defined. :contentReference[oaicite:2]{index=2}
+
+Usage / Run Instructions (as inferred from code):
+- To run core script: `python wearable_sensor_draft_code.py`  
+- Notebook version is interactive; run cells in order.
+
+Notes / Observations:
+- The repository currently lacks a CI/CD setup.
+- There is no tests/ directory yet.
+- No Streamlit or front-end components visible at this stage.
+- There is no parser for Apple Health XML yet—current code seems to work with already-formatted CSV or prototype data.
+
+Suggested Future References (for development phases):
+- Add `wearable/core.py`, `app.py`, `tests/` folder.
+- Maintain commit messages that reflect milestone changes (e.g. “Add parsing module”, “Implement metrics & tests”, “Add Streamlit UI”, etc.)
+- Consider creating tags such as `v0.1-prototype`, `v1.0-dashboard`, etc. for release tracking.
+
+Commit History Snapshot (most recent 4 commits):
+(Exact commit hashes not retrievable at snapshot; refer to GitHub log)
+
+1. Added README.md  
+2. Added wearable_sensor_draft_code.ipynb  
+3. Added wearable_sensor_draft_code.py  
+4. Initial commit (repository setup)
+
+Instructions for collaborators:
+- Clone via `git clone https://github.com/VitExMachina/Wearable_Sensor_.git`
+- Work on feature branches, e.g. `feature/parser`, `feature/ui`, etc.
+- Use `git_reference.txt` as roadmap to track new files and milestones.
+
+GitHub Reference Material:
+https://learngitbranching.js.org/
+I passed 2 levels.
+
+End of git_reference.txt
