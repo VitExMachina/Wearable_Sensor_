@@ -1,15 +1,17 @@
-# app.py (single-file, big-file friendly)
+# app.py (single-file, big-file friendly, with cloud-link option)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
+from io import BytesIO
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
 from xml.etree.ElementTree import iterparse  # for streaming XML
 
 # =========================================================
-# 1) CORE (was wearable/core.py)
+# 1) CORE
 # =========================================================
 REQUIRED_COLS = ["timestamp"]
 ALLOWED_SENSORS = {
@@ -193,7 +195,6 @@ def ingest(source) -> pd.DataFrame:
     if hasattr(source, "read"):
         name = getattr(source, "name", "") or ""
         ext = Path(name).suffix.lower()
-        # reset pointer
         source.seek(0)
         if ext == ".xml":
             df = _read_xml_streaming(source)
@@ -201,7 +202,7 @@ def ingest(source) -> pd.DataFrame:
             df = _read_tabular_big(source, ext)
         return _normalize_raw_cols(df)
 
-    # path-like
+    # path-like (string path)
     p = Path(str(source))
     ext = p.suffix.lower()
     if ext == ".xml":
@@ -210,6 +211,17 @@ def ingest(source) -> pd.DataFrame:
     else:
         df = _read_tabular_big(p, ext)
     return _normalize_raw_cols(df)
+
+def ingest_from_url(url: str) -> pd.DataFrame:
+    """Download file from cloud/storage link and run through same ingestion."""
+    resp = requests.get(url, stream=True)
+    resp.raise_for_status()
+    # try to deduce ext from URL
+    suffix = Path(url.split("?")[0]).suffix.lower()
+    bio = BytesIO(resp.content)
+    if suffix == ".xml":
+        return _normalize_raw_cols(_read_xml_streaming(bio))
+    return _normalize_raw_cols(_read_tabular_big(bio, suffix or ".csv"))
 
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
     # if already tidy
@@ -253,7 +265,6 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
         .sort_values("timestamp")
     )
 
-    # drop rows where all supported sensors are NaN
     sensor_cols = list(set(v[0] for v in TYPE_MAP.values()))
     out = out.dropna(how="all", subset=sensor_cols)
 
@@ -266,24 +277,52 @@ st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
 with st.sidebar:
-    uploaded = st.file_uploader(
-        "Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV",
-        type=["xml", "csv", "xlsx"],
+    src_mode = st.radio(
+        "Select data source:",
+        ["Upload file", "Local/server path", "Cloud / storage link"],
     )
-    if uploaded is not None:
-        size_mb = len(uploaded.getvalue()) / (1024 * 1024)
-        st.caption(f"File size: {size_mb:.2f} MB")
+
+    uploaded = None
+    local_path = None
+    cloud_url = None
+
+    if src_mode == "Upload file":
+        uploaded = st.file_uploader(
+            "Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV",
+            type=["xml", "csv", "xlsx"],
+        )
+        if uploaded is not None:
+            size_mb = len(uploaded.getvalue()) / (1024 * 1024)
+            st.caption(f"File size: {size_mb:.2f} MB")
+    elif src_mode == "Local/server path":
+        local_path = st.text_input("Enter full path to file")
+    else:  # Cloud / storage link
+        cloud_url = st.text_input("Enter cloud URL (S3/Drive/Dropbox/raw GitHub)")
+
     st.caption(
         "Tidy CSV needs `timestamp` plus any of: heart_rate, steps, temperature, "
         "wrist_temperature, oxygen_saturation."
     )
 
-if not uploaded:
+# decide source
+if src_mode == "Upload file" and not uploaded:
     st.info("Upload a file to begin.")
+    st.stop()
+elif src_mode == "Local/server path" and not local_path:
+    st.info("Enter a path to begin.")
+    st.stop()
+elif src_mode == "Cloud / storage link" and not cloud_url:
+    st.info("Enter a cloud URL to begin.")
     st.stop()
 
 try:
-    raw = ingest(uploaded)
+    if src_mode == "Upload file":
+        raw = ingest(uploaded)
+    elif src_mode == "Local/server path":
+        raw = ingest(local_path)
+    else:
+        raw = ingest_from_url(cloud_url)
+
     clean = records_to_minute_tidy(raw)
     m = compute_metrics(clean)
 
