@@ -1,9 +1,10 @@
-# app.py (single-file, big-file friendly, with cloud-link option)
+# app.py (single-file version with: XML/CSV/XLSX upload, local path, cloud link, GDrive fix)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import re
 from io import BytesIO
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -103,9 +104,9 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     )
 
 # =========================================================
-# 2) INGEST (big-file friendly)
+# 2) INGEST (upload / path / cloud)
 # =========================================================
-MAX_CHUNK = 1000000  # rows per chunk for big CSVs
+MAX_CHUNK = 100_000  # rows per chunk for big CSVs
 
 _ALIAS_RAW = {
     "type": "@type",
@@ -187,7 +188,6 @@ def _read_tabular_big(src, ext: str) -> pd.DataFrame:
         return pd.concat(parts, ignore_index=True)
     if ext in (".xlsx", ".xls"):
         return pd.read_excel(src)
-    # fallback
     return pd.read_csv(src)
 
 def ingest(source) -> pd.DataFrame:
@@ -213,15 +213,49 @@ def ingest(source) -> pd.DataFrame:
     return _normalize_raw_cols(df)
 
 def ingest_from_url(url: str) -> pd.DataFrame:
-    """Download file from cloud/storage link and run through same ingestion."""
+    """
+    Download file from cloud/storage link and run through same ingestion.
+    Supports:
+      - direct http(s) links
+      - Google Drive "file/d/<ID>/view" links (public)
+      - Google Drive "open?id=<ID>" links (public)
+      - Dropbox links (force dl=1)
+    """
+    url = url.strip()
+
+    # Google Drive: file/d/<id>/view
+    gd_file_match = re.search(r"https://drive\.google\.com/file/d/([^/]+)/", url)
+    if gd_file_match:
+        file_id = gd_file_match.group(1)
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    # Google Drive: open?id=...
+    gd_open_match = re.search(r"https://drive\.google\.com/open\?id=([^&]+)", url)
+    if gd_open_match:
+        file_id = gd_open_match.group(1)
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    # Dropbox: turn ?dl=0 into ?dl=1
+    if "dropbox.com" in url and "dl=0" in url:
+        url = url.replace("dl=0", "dl=1")
+
     resp = requests.get(url, stream=True)
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            "Remote file is not publicly accessible (401/403).\n"
+            "If this is Google Drive, set sharing to 'Anyone with the link' "
+            "and try again, or use the 'uc?export=download&id=FILE_ID' link."
+        )
     resp.raise_for_status()
-    # try to deduce ext from URL
-    suffix = Path(url.split("?")[0]).suffix.lower()
-    bio = BytesIO(resp.content)
+
+    content = resp.content
+    suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
+    bio = BytesIO(content)
+
     if suffix == ".xml":
         return _normalize_raw_cols(_read_xml_streaming(bio))
-    return _normalize_raw_cols(_read_tabular_big(bio, suffix or ".csv"))
+    else:
+        return _normalize_raw_cols(_read_tabular_big(bio, suffix))
 
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
     # if already tidy
@@ -293,11 +327,16 @@ with st.sidebar:
         )
         if uploaded is not None:
             size_mb = len(uploaded.getvalue()) / (1024 * 1024)
-            st.caption(f"File size: {size_mb:.2f} MB")
+            st.caption(f"File size: {size_mb:.2f} MB (Streamlit Cloud limit ≈ 200 MB)")
     elif src_mode == "Local/server path":
-        local_path = st.text_input("Enter full path to file")
+        local_path = st.text_input("Enter full/local path to file")
+        st.caption("Example: /Users/you/data/garrick_health_data_export.xml")
     else:  # Cloud / storage link
-        cloud_url = st.text_input("Enter cloud URL (S3/Drive/Dropbox/raw GitHub)")
+        cloud_url = st.text_input("Enter cloud URL (S3 / Dropbox / public Google Drive / raw GitHub)")
+        st.caption(
+            "For Google Drive, make the file public OR use this format:\n"
+            "https://drive.google.com/uc?export=download&id=FILE_ID"
+        )
 
     st.caption(
         "Tidy CSV needs `timestamp` plus any of: heart_rate, steps, temperature, "
@@ -363,4 +402,3 @@ try:
 
 except Exception as e:
     st.error(str(e))
-
