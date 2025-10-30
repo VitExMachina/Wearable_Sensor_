@@ -7,17 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1at45x7ty56xJ0Vi8Nmkp15GhjQcwCQjB
 """
 
-#Folder/package organization scheme
-
-#├─ app.py
-#wearable_app/
-#├─ wearable/
- #  ├─ __init__.py
-│#  ├─ core.py              #backend (keep read_csv for your tests)
-│#  └─ ingest.py            #uploader-friendly ingestion + Apple Health transform
-#─ tests/
- #  └─ test_core.py
-
 """Backend"""
 
 #wearable/core.py - Backend for wearable data processing
