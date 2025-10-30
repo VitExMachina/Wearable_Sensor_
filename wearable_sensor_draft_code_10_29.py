@@ -1,4 +1,4 @@
-# app.py (single-file version)
+# app.py (single-file, big-file friendly)
 
 import streamlit as st
 import pandas as pd
@@ -6,6 +6,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
+from xml.etree.ElementTree import iterparse  # for streaming XML
 
 # =========================================================
 # 1) CORE (was wearable/core.py)
@@ -100,8 +101,10 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     )
 
 # =========================================================
-# 2) INGEST (was wearable/ingest.py)
+# 2) INGEST (big-file friendly)
 # =========================================================
+MAX_CHUNK = 100_000  # rows per chunk for big CSVs
+
 _ALIAS_RAW = {
     "type": "@type",
     "@type": "@type",
@@ -148,37 +151,68 @@ def _normalize_raw_cols(df: pd.DataFrame) -> pd.DataFrame:
 def _normalize_tidy_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: _ALIAS_TIDY.get(c, c) for c in df.columns})
 
-def _read_xml(src):
-    return pd.read_xml(src, xpath=".//Record")
+def _read_xml_streaming(file_obj) -> pd.DataFrame:
+    """Streaming Apple Health XML reader for big XML exports."""
+    rows = []
+    for event, elem in iterparse(file_obj):
+        if elem.tag != "Record":
+            elem.clear()
+            continue
+        t = elem.attrib.get("type")
+        if not t:
+            elem.clear()
+            continue
+        rows.append(
+            {
+                "@type": t,
+                "@creationDate": elem.attrib.get("creationDate")
+                or elem.attrib.get("endDate")
+                or elem.attrib.get("startDate"),
+                "@unit": elem.attrib.get("unit"),
+                "@value": elem.attrib.get("value"),
+            }
+        )
+        elem.clear()
+    return pd.DataFrame(rows)
 
-def _read_tabular(src, ext: str):
+def _read_tabular_big(src, ext: str) -> pd.DataFrame:
+    """Read big CSVs in chunks; Excel as usual."""
     if ext == ".csv":
-        return pd.read_csv(src)
+        chunks = pd.read_csv(src, chunksize=MAX_CHUNK)
+        parts = []
+        for ch in chunks:
+            parts.append(ch)
+        return pd.concat(parts, ignore_index=True)
     if ext in (".xlsx", ".xls"):
         return pd.read_excel(src)
-    try:
-        return pd.read_csv(src)
-    except:
-        return pd.read_excel(src)
+    # fallback
+    return pd.read_csv(src)
 
 def ingest(source) -> pd.DataFrame:
-    if hasattr(source, "read"):  # Streamlit UploadedFile
+    # file-like (Streamlit UploadedFile)
+    if hasattr(source, "read"):
         name = getattr(source, "name", "") or ""
         ext = Path(name).suffix.lower()
+        # reset pointer
+        source.seek(0)
         if ext == ".xml":
-            df = _read_xml(source)
+            df = _read_xml_streaming(source)
         else:
-            df = _read_tabular(source, ext)
+            df = _read_tabular_big(source, ext)
         return _normalize_raw_cols(df)
+
+    # path-like
     p = Path(str(source))
     ext = p.suffix.lower()
     if ext == ".xml":
-        df = _read_xml(p)
+        with open(p, "rb") as f:
+            df = _read_xml_streaming(f)
     else:
-        df = _read_tabular(p, ext)
+        df = _read_tabular_big(p, ext)
     return _normalize_raw_cols(df)
 
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
+    # if already tidy
     tidy = _normalize_tidy_cols(df_raw.copy())
     if "timestamp" in tidy.columns:
         return validate_and_clean(tidy)
@@ -218,6 +252,11 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"minute": "timestamp"})
         .sort_values("timestamp")
     )
+
+    # drop rows where all supported sensors are NaN
+    sensor_cols = list(set(v[0] for v in TYPE_MAP.values()))
+    out = out.dropna(how="all", subset=sensor_cols)
+
     return validate_and_clean(out)
 
 # =========================================================
@@ -231,6 +270,9 @@ with st.sidebar:
         "Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV",
         type=["xml", "csv", "xlsx"],
     )
+    if uploaded is not None:
+        size_mb = len(uploaded.getvalue()) / (1024 * 1024)
+        st.caption(f"File size: {size_mb:.2f} MB")
     st.caption(
         "Tidy CSV needs `timestamp` plus any of: heart_rate, steps, temperature, "
         "wrist_temperature, oxygen_saturation."
