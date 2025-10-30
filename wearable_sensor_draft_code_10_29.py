@@ -105,7 +105,7 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
 # =========================================================
 # 2) INGEST (big-file friendly)
 # =========================================================
-MAX_CHUNK = 100_000  # rows per chunk for big CSVs
+MAX_CHUNK = 1000000  # rows per chunk for big CSVs
 
 _ALIAS_RAW = {
     "type": "@type",
