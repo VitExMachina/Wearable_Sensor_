@@ -1,17 +1,23 @@
+# app.py (single-file version)
 
-
-#Backend"""
-
-#wearable/core.py - Backend for wearable data processing
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
-import io
+import streamlit as st
 import pandas as pd
 import numpy as np
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from pathlib import Path
 
+# =========================================================
+# 1) CORE (was wearable/core.py)
+# =========================================================
 REQUIRED_COLS = ["timestamp"]
-ALLOWED_SENSORS = {"heart_rate", "steps", "temperature", "wrist_temperature", "oxygen_saturation"}
+ALLOWED_SENSORS = {
+    "heart_rate",
+    "steps",
+    "temperature",
+    "wrist_temperature",
+    "oxygen_saturation",
+}
 
 @dataclass(frozen=True)
 class Metrics:
@@ -27,12 +33,6 @@ class Metrics:
     temp_mean: Optional[float]
     spo2_mean: Optional[float]
 
-def read_csv(file_or_bytes) -> pd.DataFrame:
-    if isinstance(file_or_bytes, (bytes, bytearray)):
-        buf = io.BytesIO(file_or_bytes)
-        return pd.read_csv(buf)
-    return pd.read_csv(file_or_bytes)
-
 def _coerce_ts(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce")
 
@@ -42,11 +42,16 @@ def validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Missing required column: 'timestamp'")
     df["timestamp"] = _coerce_ts(df["timestamp"])
     df = df.dropna(subset=["timestamp"])
+
     sensor_cols = [c for c in df.columns if c in ALLOWED_SENSORS]
     if not sensor_cols:
-        raise ValueError(f"No recognized sensor columns. Expected any of: {', '.join(sorted(ALLOWED_SENSORS))}")
+        raise ValueError(
+            f"No recognized sensor columns. Expected any of: {', '.join(sorted(ALLOWED_SENSORS))}"
+        )
+
     for c in sensor_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
     df = df.dropna(subset=sensor_cols, how="all")
     df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
     return df[["timestamp"] + sensor_cols]
@@ -61,12 +66,25 @@ def resample_daily(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def compute_metrics(df: pd.DataFrame) -> Metrics:
     sensor_cols = [c for c in df.columns if c in ALLOWED_SENSORS]
     daily_means, daily_max = resample_daily(df)
-    resting_hr = float(np.nanpercentile(df["heart_rate"], 5)) if "heart_rate" in sensor_cols else None
+
+    resting_hr = (
+        float(np.nanpercentile(df["heart_rate"], 5))
+        if "heart_rate" in sensor_cols
+        else None
+    )
     step_total = int(np.nansum(df["steps"])) if "steps" in sensor_cols else None
-    temp_mean  = float(np.nanmean(df["temperature"])) if "temperature" in sensor_cols else None
-    spo2_mean  = float(np.nanmean(df["oxygen_saturation"])) if "oxygen_saturation" in sensor_cols else None
+    temp_mean = (
+        float(np.nanmean(df["temperature"])) if "temperature" in sensor_cols else None
+    )
+    spo2_mean = (
+        float(np.nanmean(df["oxygen_saturation"]))
+        if "oxygen_saturation" in sensor_cols
+        else None
+    )
+
     t0, t1 = df["timestamp"].min(), df["timestamp"].max()
     duration_hours = (t1 - t0).total_seconds() / 3600.0 if len(df) else 0.0
+
     return Metrics(
         n_rows=len(df),
         time_start=t0,
@@ -81,25 +99,39 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
         spo2_mean=spo2_mean,
     )
 
-"""Ingestion and Transformation"""
-
-#wearable/ingest.py
-import pandas as pd
-from pathlib import Path
-
+# =========================================================
+# 2) INGEST (was wearable/ingest.py)
+# =========================================================
 _ALIAS_RAW = {
-    "type": "@type", "@type": "@type",
-    "creationDate": "@creationDate", "@creationDate": "@creationDate",
-    "unit": "@unit", "@unit": "@unit",
-    "value": "@value", "@value": "@value",
+    "type": "@type",
+    "@type": "@type",
+    "creationDate": "@creationDate",
+    "@creationDate": "@creationDate",
+    "unit": "@unit",
+    "@unit": "@unit",
+    "value": "@value",
+    "@value": "@value",
 }
 _ALIAS_TIDY = {
-    "Timestamp": "timestamp", "Time": "timestamp", "timestamp": "timestamp",
-    "HeartRate": "heart_rate", "HR": "heart_rate", "heartRate": "heart_rate", "heart_rate": "heart_rate",
-    "Steps": "steps", "StepCount": "steps", "steps": "steps",
-    "Temperature": "temperature", "BodyTemp": "temperature", "temperature": "temperature",
-    "WristTemperature": "wrist_temperature", "wristTemperature": "wrist_temperature", "wrist_temperature": "wrist_temperature",
-    "OxygenSaturation": "oxygen_saturation", "oxygenSaturation": "oxygen_saturation", "oxygen_saturation": "oxygen_saturation",
+    "Timestamp": "timestamp",
+    "Time": "timestamp",
+    "timestamp": "timestamp",
+    "HeartRate": "heart_rate",
+    "HR": "heart_rate",
+    "heartRate": "heart_rate",
+    "heart_rate": "heart_rate",
+    "Steps": "steps",
+    "StepCount": "steps",
+    "steps": "steps",
+    "Temperature": "temperature",
+    "BodyTemp": "temperature",
+    "temperature": "temperature",
+    "WristTemperature": "wrist_temperature",
+    "wristTemperature": "wrist_temperature",
+    "wrist_temperature": "wrist_temperature",
+    "OxygenSaturation": "oxygen_saturation",
+    "oxygenSaturation": "oxygen_saturation",
+    "oxygen_saturation": "oxygen_saturation",
 }
 
 TYPE_MAP = {
@@ -130,8 +162,7 @@ def _read_tabular(src, ext: str):
         return pd.read_excel(src)
 
 def ingest(source) -> pd.DataFrame:
-    # file-like (Streamlit UploadedFile) or path-like
-    if hasattr(source, "read"):
+    if hasattr(source, "read"):  # Streamlit UploadedFile
         name = getattr(source, "name", "") or ""
         ext = Path(name).suffix.lower()
         if ext == ".xml":
@@ -139,7 +170,8 @@ def ingest(source) -> pd.DataFrame:
         else:
             df = _read_tabular(source, ext)
         return _normalize_raw_cols(df)
-    p = Path(str(source)); ext = p.suffix.lower()
+    p = Path(str(source))
+    ext = p.suffix.lower()
     if ext == ".xml":
         df = _read_xml(p)
     else:
@@ -147,47 +179,62 @@ def ingest(source) -> pd.DataFrame:
     return _normalize_raw_cols(df)
 
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
-    from .core import validate_and_clean  # local import to avoid circular imports
     tidy = _normalize_tidy_cols(df_raw.copy())
     if "timestamp" in tidy.columns:
         return validate_and_clean(tidy)
+
     need = {"@type", "@creationDate", "@value"}
     if not need.issubset(df_raw.columns):
         raise ValueError("Unsupported format. Provide Apple Health export or tidy CSV.")
-    df = df_raw.rename(columns={"@type":"Biometric_Label","@creationDate":"Date","@value":"Value"})
+
+    df = df_raw.rename(
+        columns={
+            "@type": "Biometric_Label",
+            "@creationDate": "Date",
+            "@value": "Value",
+        }
+    )
     df["timestamp"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Value"] = pd.to_numeric(df["Value"].astype(str).str.replace(",", "."), errors="coerce")
-    df = df.dropna(subset=["timestamp","Value","Biometric_Label"])
+    df["Value"] = pd.to_numeric(
+        df["Value"].astype(str).str.replace(",", "."),
+        errors="coerce",
+    )
+    df = df.dropna(subset=["timestamp", "Value", "Biometric_Label"])
     df["minute"] = df["timestamp"].dt.floor("T")
+
     out = None
-    for t,(col,agg) in TYPE_MAP.items():
+    for t, (col, agg) in TYPE_MAP.items():
         d = df[df["Biometric_Label"] == t]
         if d.empty:
             continue
         g = d.groupby("minute")["Value"].agg(agg).rename(col).to_frame()
         out = g if out is None else out.join(g, how="outer")
+
     if out is None:
         raise ValueError("No supported biometric types found in file.")
-    out = out.reset_index().rename(columns={"minute": "timestamp"}).sort_values("timestamp")
+
+    out = (
+        out.reset_index()
+        .rename(columns={"minute": "timestamp"})
+        .sort_values("timestamp")
+    )
     return validate_and_clean(out)
 
-"""Streamlit UI"""
-
-# app.py
-import streamlit as st
-import pandas as pd
-from wearable.ingest import ingest, records_to_minute_tidy
-from wearable.core import compute_metrics
-
+# =========================================================
+# 3) STREAMLIT UI
+# =========================================================
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
 with st.sidebar:
     uploaded = st.file_uploader(
         "Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV",
-        type=["xml","csv","xlsx"]
+        type=["xml", "csv", "xlsx"],
     )
-    st.caption("Tidy CSV needs `timestamp` plus any of: heart_rate, steps, temperature, wrist_temperature, oxygen_saturation.")
+    st.caption(
+        "Tidy CSV needs `timestamp` plus any of: heart_rate, steps, temperature, "
+        "wrist_temperature, oxygen_saturation."
+    )
 
 if not uploaded:
     st.info("Upload a file to begin.")
@@ -199,34 +246,40 @@ try:
     m = compute_metrics(clean)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Rows", f"{m.n_rows:,}" if hasattr(m, "n_rows") else f"{m['n_rows']:,}")
-    dur = m.duration_hours if hasattr(m, "duration_hours") else m["duration_hours"]
-    c2.metric("Duration (hrs)", f"{dur:.1f}")
-    sensors = m.sensors_present if hasattr(m, "sensors_present") else m["sensors_present"]
-    c3.metric("Sensors", ", ".join(sensors) or "—")
-    steps = m.step_total if hasattr(m, "step_total") else m["step_total"]
-    c4.metric("Total Steps", f"{steps:,}" if steps else "—")
-    rhr = m.resting_hr if hasattr(m, "resting_hr") else m["resting_hr"]
-    c5.metric("Resting HR (≈5th %)", f"{rhr:.0f} bpm" if rhr else "—")
+    c1.metric("Rows", f"{m.n_rows:,}")
+    c2.metric("Duration (hrs)", f"{m.duration_hours:.1f}")
+    c3.metric("Sensors", ", ".join(m.sensors_present) or "—")
+    c4.metric("Total Steps", f"{m.step_total:,}" if m.step_total else "—")
+    c5.metric("Resting HR (≈5th %)", f"{m.resting_hr:.0f} bpm" if m.resting_hr else "—")
 
     c6, c7 = st.columns(2)
-    tmean = m.temp_mean if hasattr(m, "temp_mean") else m["temp_mean"]
-    spo2  = m.spo2_mean if hasattr(m, "spo2_mean") else m["spo2_mean"]
-    if tmean is not None: c6.metric("Avg Temperature", f"{tmean:.1f} °C")
-    if spo2  is not None: c7.metric("Avg SpO₂", f"{spo2:.0f} %")
+    if m.temp_mean is not None:
+        c6.metric("Avg Temperature", f"{m.temp_mean:.1f} °C")
+    if m.spo2_mean is not None:
+        c7.metric("Avg SpO₂", f"{m.spo2_mean:.0f} %")
 
     st.subheader("Time Series")
     st.line_chart(clean.set_index("timestamp"))
 
     st.subheader("Daily Averages")
-    daily_means = m.daily_means if hasattr(m, "daily_means") else m["daily_means"]
-    st.bar_chart(daily_means)
+    st.bar_chart(m.daily_means)
 
     with st.expander("Clean Data"):
         st.dataframe(clean, use_container_width=True)
 
-    st.download_button("Download Clean CSV", clean.to_csv(index=False).encode("utf-8"), "cleaned_wearable.csv", "text/csv")
-    st.download_button("Download Daily Means CSV", daily_means.reset_index().to_csv(index=False).encode("utf-8"), "daily_means.csv", "text/csv")
+    st.download_button(
+        "Download Clean CSV",
+        clean.to_csv(index=False).encode("utf-8"),
+        "cleaned_wearable.csv",
+        "text/csv",
+    )
+    st.download_button(
+        "Download Daily Means CSV",
+        m.daily_means.reset_index().to_csv(index=False).encode("utf-8"),
+        "daily_means.csv",
+        "text/csv",
+    )
 
 except Exception as e:
     st.error(str(e))
+
