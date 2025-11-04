@@ -223,20 +223,29 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
         df["col"] = df["Biometric_Label"].map(_map_type_to_col)
         df = df.dropna(subset=["col"])
 
-        out = None
+        # Optimized: More efficient minute resampling
+        # Instead of filtering full dataframe multiple times, use .loc with column selection
+        # and pd.concat instead of multiple outer joins (much faster)
+        results = {}
         for col in df["col"].unique():
-            d = df[df["col"] == col]
+            # Select only needed columns before filtering (more memory efficient)
+            col_mask = df["col"] == col
+            col_subset = df.loc[col_mask, ["minute", "Value"]]
+            # Apply appropriate aggregation function
             func = "median" if col == "heart_rate" else ("sum" if col == "steps" else "mean")
-            g = d.groupby("minute")["Value"].agg(func).rename(col).to_frame()
-            # avoid overlap without suffix issues by outer-joining and resolving dup columns
-            out = g if out is None else out.join(g, how="outer", rsuffix=f"__dup_{col}")
+            results[col] = col_subset.groupby("minute", observed=True)["Value"].agg(func)
+        
+        # Combine results - pd.concat is faster than multiple outer joins
+        if len(results) > 1:
+            out = pd.concat(results, axis=1)
+            out.columns = list(results.keys())
+        else:
+            out = pd.DataFrame(results)
+        
+        out.index.name = "minute"
 
-        if out is None or out.empty:
+        if out.empty:
             raise ValueError("No supported biometric types found in file.")
-
-        # If any accidental duplicate names slipped in, keep the first and drop the rsuffix columns
-        dup_cols = [c for c in out.columns if "__dup_" in c]
-        out = out.drop(columns=dup_cols) if dup_cols else out
 
         out = out.reset_index().rename(columns={"minute":"timestamp"}).sort_values("timestamp")
 
