@@ -1,27 +1,19 @@
-
-# - All radios/switches replaced with dropdowns (selectboxes)
-# - Diagnostics remains a checkbox
-# - Big-file ingest + cloud links + streaming Apple Health XML
-# - Flexible Apple Health type mapping
-# - Per-sensor filtering & visuals
-# - Correlation (matrix or rolling over time)
-# - Resampling + optional z-score normalization + moving average
+# app.py — Wearable Analyzer (single file)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import re
+import subprocess, sys
 from io import BytesIO
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
 from xml.etree.ElementTree import iterparse
 
-# =========== CORE ===========
-ALLOWED_SENSORS = {
-    "heart_rate", "steps", "temperature", "wrist_temperature", "oxygen_saturation",
-}
+# ======================= CORE =======================
+ALLOWED_SENSORS = {"heart_rate", "steps", "temperature", "wrist_temperature", "oxygen_saturation"}
 
 @dataclass(frozen=True)
 class Metrics:
@@ -37,20 +29,23 @@ class Metrics:
     temp_mean: Optional[float]
     spo2_mean: Optional[float]
 
-def _coerce_ts(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, errors="coerce")
+def _coerce_ts_utc(s: pd.Series) -> pd.Series:
+    # parse as UTC to avoid tz comparison errors
+    return pd.to_datetime(s, errors="coerce", utc=True)
 
 def validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "timestamp" not in df.columns:
         raise ValueError("Missing required column: 'timestamp'")
-    df["timestamp"] = _coerce_ts(df["timestamp"])
+    df["timestamp"] = _coerce_ts_utc(df["timestamp"])
     df = df.dropna(subset=["timestamp"])
+
     sens = [c for c in df.columns if c in ALLOWED_SENSORS]
     if not sens:
         raise ValueError("No recognized sensor columns. Expected any of: " + ", ".join(sorted(ALLOWED_SENSORS)))
     for c in sens:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
     df = df.dropna(subset=sens, how="all").drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
     return df[["timestamp"] + sens]
 
@@ -61,15 +56,17 @@ def resample_daily(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def compute_metrics(df: pd.DataFrame) -> Metrics:
     sens = [c for c in df.columns if c in ALLOWED_SENSORS]
     daily_means, daily_max = resample_daily(df)
+
     resting_hr = float(np.nanpercentile(df["heart_rate"].dropna(), 5)) if "heart_rate" in sens and df["heart_rate"].notna().any() else None
     step_total = int(np.nansum(df["steps"])) if "steps" in sens else None
     temp_mean  = float(np.nanmean(df["temperature"])) if "temperature" in sens else None
     spo2_mean  = float(np.nanmean(df["oxygen_saturation"])) if "oxygen_saturation" in sens else None
+
     t0, t1 = df["timestamp"].min(), df["timestamp"].max()
     duration_hours = (t1 - t0).total_seconds()/3600.0 if len(df) else 0.0
     return Metrics(len(df), t0, t1, duration_hours, sens, daily_means, daily_max, resting_hr, step_total, temp_mean, spo2_mean)
 
-# =========== INGEST (big files + cloud) ===========
+# ================= INGEST (big files + cloud) =================
 MAX_CHUNK = 100_000
 
 _ALIAS_RAW = {
@@ -136,11 +133,9 @@ def ingest(source) -> pd.DataFrame:
 def ingest_from_url(url: str) -> pd.DataFrame:
     url = url.strip()
     m = re.search(r"https://drive\.google\.com/file/d/([^/]+)/", url)
-    if m:
-        url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    if m: url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
     m = re.search(r"https://drive\.google\.com/open\?id=([^&]+)", url)
-    if m:
-        url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    if m: url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
     if "dropbox.com" in url and "dl=0" in url:
         url = url.replace("dl=0","dl=1")
 
@@ -157,13 +152,12 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
     return _normalize_raw_cols(_read_xml_streaming(bio) if suffix == ".xml" else _read_tabular_big(bio, suffix))
 
-# =========== FLEXIBLE RAW → TIDY ===========
+# ============== FLEXIBLE RAW → TIDY ==============
 def _maybe_scale_spo2(series: pd.Series) -> pd.Series:
     med = series.dropna().median()
     return series*100.0 if pd.notna(med) and med < 2 else series
 
 def _map_type_to_col(t: str) -> Optional[str]:
-    """Flexible mapping: match by substring so minor variations don’t break aggregation."""
     if not isinstance(t, str): return None
     if "HeartRate" in t: return "heart_rate"
     if "StepCount" in t: return "steps"
@@ -173,44 +167,47 @@ def _map_type_to_col(t: str) -> Optional[str]:
     return None
 
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
-    # Already tidy?
     tidy = _normalize_tidy_cols(df_raw.copy())
     if "timestamp" in tidy.columns:
+        tidy["timestamp"] = _coerce_ts_utc(tidy["timestamp"])
         if "oxygen_saturation" in tidy.columns:
             tidy["oxygen_saturation"] = _maybe_scale_spo2(tidy["oxygen_saturation"])
         return validate_and_clean(tidy)
 
-    # Apple Health raw?
     need = {"@type","@creationDate","@value"}
     if need.issubset(df_raw.columns):
         df = df_raw.rename(columns={"@type":"Biometric_Label","@creationDate":"Date","@value":"Value"})
-        df["timestamp"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["timestamp"] = _coerce_ts_utc(df["Date"])
         df["Value"] = pd.to_numeric(df["Value"].astype(str).str.replace(",", "."), errors="coerce")
         df = df.dropna(subset=["timestamp","Value","Biometric_Label"])
-        df["minute"] = df["timestamp"].dt.floor("min")  # <- fix deprecated 'T'
+        df["minute"] = df["timestamp"].dt.floor("min")  # fix deprecated 'T'
         df["col"] = df["Biometric_Label"].map(_map_type_to_col)
         df = df.dropna(subset=["col"])
 
-        # Aggregate per-minute per-sensor with appropriate function
         out = None
         for col in df["col"].unique():
             d = df[df["col"] == col]
             func = "median" if col == "heart_rate" else ("sum" if col == "steps" else "mean")
             g = d.groupby("minute")["Value"].agg(func).rename(col).to_frame()
-            out = g if out is None else out.join(g, how="outer")
+            # avoid overlap without suffix issues by outer-joining and resolving dup columns
+            out = g if out is None else out.join(g, how="outer", rsuffix=f"__dup_{col}")
 
         if out is None or out.empty:
             raise ValueError("No supported biometric types found in file.")
 
+        # If any accidental duplicate names slipped in, keep the first and drop the rsuffix columns
+        dup_cols = [c for c in out.columns if "__dup_" in c]
+        out = out.drop(columns=dup_cols) if dup_cols else out
+
         out = out.reset_index().rename(columns={"minute":"timestamp"}).sort_values("timestamp")
-        # Normalize SpO₂ if present
+
         if "oxygen_saturation" in out.columns:
             out["oxygen_saturation"] = _maybe_scale_spo2(out["oxygen_saturation"])
-        # Drop rows where all sensors are NaN
+
         out = out.dropna(how="all", subset=[c for c in out.columns if c != "timestamp"])
         return validate_and_clean(out)
 
-    # Last attempt: guess a time column
+    # last try: guess a time column
     guess_cols = [c for c in df_raw.columns if "date" in c.lower() or "time" in c.lower()]
     if guess_cols:
         guess = df_raw.rename(columns={guess_cols[0]:"timestamp"})
@@ -219,14 +216,14 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     raise ValueError("Unsupported format. Provide Apple Health export or tidy CSV.")
 
-# =========== UI ===========
+# ======================= UI =======================
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
 with st.sidebar:
-    # Data source as dropdown instead of radio
-    src_mode = st.selectbox("Data source", ["Upload file", "Local/server path", "Cloud / storage link"])
+    src_mode = st.selectbox("Select data source", ["Upload file", "Local/server path", "Cloud / storage link"])
     uploaded = None; local_path = None; cloud_url = None
+
     if src_mode == "Upload file":
         uploaded = st.file_uploader("Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV", type=["xml","csv","xlsx"])
         if uploaded is not None:
@@ -237,23 +234,16 @@ with st.sidebar:
         cloud_url = st.text_input("Enter cloud URL (S3 / Dropbox / public Google Drive / raw GitHub)")
         st.caption("Google Drive tip: use https://drive.google.com/uc?export=download&id=FILE_ID and make the file public.")
 
-    # Resampling dropdown
-    resample_choice = st.selectbox(
-        "Resample frequency",
-        ["None", "5 min", "15 min", "1H", "1D"],
-        index=0
-    )
+    show_diag = st.selectbox("Diagnostics", ["Off","Show raw @type counts"]) == "Show raw @type counts"
 
-    # Moving average dropdown (window in periods)
-    ma_window = st.selectbox("Moving average window (periods)", [1, 5, 10, 15, 30, 60, 120], index=1)
+    # Date range filter (UTC-safe)
+    date_mode = st.selectbox("Date filter", ["All dates", "Custom range"])
+    start_date = end_date = None
+    if date_mode == "Custom range":
+        start_date = st.date_input("Start date")
+        end_date   = st.date_input("End date")
 
-    # Z-score normalization dropdown (Yes/No)
-    zscore_choice = st.selectbox("Z-score normalize (per selected series)", ["No", "Yes"], index=0)
-
-    # Diagnostics remains a checkbox as requested
-    show_diag = st.checkbox("Show raw @type counts (diagnostics)")
-
-# Guardrails to start
+# validate source selection
 if src_mode == "Upload file" and not uploaded:
     st.info("Upload a file to begin."); st.stop()
 if src_mode == "Local/server path" and not local_path:
@@ -261,8 +251,8 @@ if src_mode == "Local/server path" and not local_path:
 if src_mode == "Cloud / storage link" and not cloud_url:
     st.info("Enter a cloud URL to begin."); st.stop()
 
-# Load
 try:
+    # ingest
     if src_mode == "Upload file":
         raw = ingest(uploaded)
     elif src_mode == "Local/server path":
@@ -270,33 +260,31 @@ try:
     else:
         raw = ingest_from_url(cloud_url)
 
-    # Optional quick diagnostics: what @type values exist?
+    # diagnostics
     if show_diag:
         with st.expander("Diagnostics: Top @type values"):
             if "@type" in raw.columns:
-                counts = raw["@type"].value_counts().head(50)
-                st.write(counts)
+                st.write(raw["@type"].value_counts().head(30))
             else:
                 st.write("No @type column present (likely a tidy CSV).")
 
-    # Tidy + metrics
+    # tidy + metrics
     clean = records_to_minute_tidy(raw)
+
+    # date filter (convert to UTC to match clean['timestamp'])
+    if date_mode == "Custom range" and start_date and end_date:
+        start_ts = pd.to_datetime(start_date).tz_localize("UTC")
+        # include the full end day
+        end_ts = pd.to_datetime(end_date).tz_localize("UTC") + pd.Timedelta(days=1)
+        clean = clean[(clean["timestamp"] >= start_ts) & (clean["timestamp"] < end_ts)]
+
+    if clean.empty:
+        st.warning("No data after filtering. Adjust your date range.")
+        st.stop()
+
     m = compute_metrics(clean)
 
-    # Optional resampling for downstream visuals
-    df_vis = clean.copy()
-    if resample_choice != "None":
-        rule = {"5 min":"5min", "15 min":"15min", "1H":"1H", "1D":"1D"}[resample_choice]
-        df_vis = df_vis.set_index("timestamp").resample(rule).mean(numeric_only=True).reset_index()
-
-    # UI: filter by date range (dropdowns replaced: keep a date_input which is native)
-    min_d, max_d = df_vis["timestamp"].min().date(), df_vis["timestamp"].max().date()
-    dr = st.date_input("Date range", value=(min_d, max_d), min_value=min_d, max_value=max_d)
-    if isinstance(dr, tuple) and len(dr) == 2:
-        start_date, end_date = pd.to_datetime(dr[0]), pd.to_datetime(dr[1]) + pd.Timedelta(days=1)
-        df_vis = df_vis[(df_vis["timestamp"] >= start_date) & (df_vis["timestamp"] < end_date)]
-
-    # Header metrics
+    # KPI row
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("Rows", f"{m.n_rows:,}")
     c2.metric("Duration (hrs)", f"{m.duration_hours:.1f}")
@@ -307,55 +295,62 @@ try:
     if m.temp_mean is not None: c6.metric("Avg Temperature", f"{m.temp_mean:.1f} °C")
     if m.spo2_mean is not None:  c7.metric("Avg SpO₂", f"{m.spo2_mean:.0f} %")
 
-    st.subheader("Sensor filtering & visuals")
-    # Single-sensor selection (dropdown, not multiselect)
-    available_sensors = [c for c in df_vis.columns if c in ALLOWED_SENSORS]
-    if not available_sensors:
-        st.warning("No recognized sensor columns available after filtering.")
-    else:
-        sensor_sel = st.selectbox("Select a sensor", available_sensors, index=0)
+    st.subheader("Time Series (All Sensors)")
+    st.line_chart(clean.set_index("timestamp"))
 
-        # Prepare the selected series with optional rolling & z-score
-        series = df_vis.set_index("timestamp")[sensor_sel]
-        if ma_window and ma_window > 1:
-            series = series.rolling(ma_window, min_periods=1).mean()
-        if zscore_choice == "Yes":
-            s_mean, s_std = series.mean(), series.std()
-            if pd.notna(s_std) and s_std != 0:
-                series = (series - s_mean)/s_std
+    st.subheader("Daily Averages")
+    st.bar_chart(m.daily_means)
 
-        st.line_chart(series.rename(sensor_sel))
+    # ------- Sensor filter + per-sensor visuals -------
+    st.subheader("Sensor Explorer")
+    sensor_options = ["(select a sensor)"] + m.sensors_present
+    sel_sensor = st.selectbox("Choose a sensor", sensor_options)
+    if sel_sensor != "(select a sensor)":
+        s = clean[["timestamp", sel_sensor]].dropna()
+        st.line_chart(s.set_index("timestamp"))
+        with st.expander("Rolling options"):
+            win = st.selectbox("Rolling window (minutes)", ["5","10","15","30","60"], index=2)
+        w = int(win)
+        s_rolled = s.set_index("timestamp")[sel_sensor].rolling(f"{w}min").mean()
+        st.line_chart(s_rolled)
 
-        # Daily averages (unchanged)
-        st.subheader("Daily Averages (original daily means)")
-        st.bar_chart(m.daily_means)
-
-    # Comparison & correlations
-    st.subheader("Compare sensors & correlations")
-    cols = [c for c in df_vis.columns if c in ALLOWED_SENSORS]
-    if len(cols) >= 2:
-        colA = st.selectbox("Sensor A", cols, index=0, key="cmp_a")
-        colB = st.selectbox("Sensor B", cols, index=1, key="cmp_b")
-        corr_mode = st.selectbox("Correlation view", ["Correlation matrix", "Rolling correlation over time"], index=0)
-
-        df_cmp = df_vis.set_index("timestamp")[[colA, colB]].dropna(how="all")
-        # Optional normalize independently per series for correlation visuals
-        if zscore_choice == "Yes":
-            df_cmp = df_cmp.apply(lambda s: (s - s.mean())/s.std() if s.std() not in (0, np.nan, None) else s)
-
-        if corr_mode == "Correlation matrix":
-            st.markdown("**Correlation matrix** (current selection)")
-            corr = df_vis.set_index("timestamp")[cols].corr()
-            st.dataframe(corr.style.background_gradient(cmap="RdYlGn"), use_container_width=True)
+    # ------- Correlations -------
+    st.subheader("Correlations")
+    corr_mode = st.selectbox("Select correlation view", ["Correlation matrix","Rolling correlation over time"])
+    if corr_mode == "Correlation matrix":
+        # prepare numeric sensors present
+        num_cols = [c for c in m.sensors_present if clean[c].notna().any()]
+        if len(num_cols) < 2:
+            st.info("Need at least two sensors to compute a correlation matrix.")
         else:
-            st.markdown("**Rolling correlation over time**")
-            # rolling window dropdown already chosen in sidebar (ma_window)
-            if colA != colB:
-                rolling = df_cmp[colA].rolling(ma_window, min_periods=1).corr(df_cmp[colB])
-                st.line_chart(rolling.rename(f"rolling_corr({colA},{colB})"))
-            else:
-                st.info("Pick two different sensors to compute rolling correlation.")
+            corr = clean[num_cols].corr()
+            # ensure matplotlib is available for background_gradient
+            try:
+                import matplotlib  # noqa: F401
+            except ImportError:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
+                import matplotlib  # noqa: F401
+            st.dataframe(corr.style.background_gradient(cmap="RdYlGn"), use_container_width=True)
+    else:
+        # Rolling correlation between two selected sensors
+        roll_cols = [c for c in m.sensors_present if clean[c].notna().any()]
+        if len(roll_cols) < 2:
+            st.info("Need two sensors to compute rolling correlation.")
+        else:
+            c1, c2 = st.columns(2)
+            s1 = c1.selectbox("Sensor A", roll_cols, key="rc_a")
+            s2 = c2.selectbox("Sensor B", roll_cols, index=1 if len(roll_cols)>1 else 0, key="rc_b")
+            with st.expander("Rolling correlation settings"):
+                rc_win = st.selectbox("Window (minutes)", ["10","15","30","60","120"], index=2, key="rc_win")
+            wmin = int(rc_win)
+            df_pair = clean[["timestamp", s1, s2]].dropna().set_index("timestamp")
+            # align at minute frequency
+            df_pair = df_pair.resample("1min").mean()
+            # compute rolling corr
+            roll_corr = df_pair[s1].rolling(f"{wmin}min").corr(df_pair[s2])
+            st.line_chart(roll_corr)
 
+    # ------- Data table & downloads -------
     with st.expander("Clean Data"):
         st.dataframe(clean, use_container_width=True)
 
