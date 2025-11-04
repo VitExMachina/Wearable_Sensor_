@@ -280,7 +280,9 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
         errors="coerce",
     )
     df = df.dropna(subset=["timestamp", "Value", "Biometric_Label"])
-    df["minute"] = df["timestamp"].dt.floor("T")
+
+    # FIX: use 'min' instead of deprecated 'T'
+    df["minute"] = df["timestamp"].dt.floor("min")
 
     out = None
     for t, (col, agg) in TYPE_MAP.items():
