@@ -140,11 +140,22 @@ _ALIAS_TIDY = {
     "oxygen_saturation": "oxygen_saturation",
 }
 
+# Expanded map: include common Apple HR variants so we don’t miss HR when Apple logs
+# resting or walking-average HR instead of vanilla HeartRate.
 TYPE_MAP = {
+    # Heart rate variants
     "HKQuantityTypeIdentifierHeartRate": ("heart_rate", "median"),
+    "HKQuantityTypeIdentifierRestingHeartRate": ("heart_rate", "median"),
+    "HKQuantityTypeIdentifierWalkingHeartRateAverage": ("heart_rate", "mean"),
+
+    # Steps
     "HKQuantityTypeIdentifierStepCount": ("steps", "sum"),
+
+    # Temperatures
     "HKQuantityTypeIdentifierBodyTemperature": ("temperature", "mean"),
     "HKQuantityTypeIdentifierAppleSleepingWristTemperature": ("wrist_temperature", "mean"),
+
+    # SpO2
     "HKQuantityTypeIdentifierOxygenSaturation": ("oxygen_saturation", "mean"),
 }
 
@@ -281,10 +292,12 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
     )
     df = df.dropna(subset=["timestamp", "Value", "Biometric_Label"])
 
-    # FIX: use 'min' instead of deprecated 'T'
+    # Use 'min' instead of deprecated 'T'
     df["minute"] = df["timestamp"].dt.floor("min")
 
     out = None
+    # OPTIONAL: small headroom for case mismatches
+    # normalize label exactly as seen in XML (Apple uses exact casing)
     for t, (col, agg) in TYPE_MAP.items():
         d = df[df["Biometric_Label"] == t]
         if d.empty:
@@ -366,6 +379,11 @@ try:
         raw = ingest(local_path)
     else:
         raw = ingest_from_url(cloud_url)
+
+    # --- Quick debug peek so you can verify present Apple types ---
+    if {"@type"}.issubset(raw.columns):
+        with st.expander("Detected Apple Health record types (sample)"):
+            st.write(pd.Series(raw["@type"]).value_counts().head(20))
 
     clean = records_to_minute_tidy(raw)
     m = compute_metrics(clean)
