@@ -13,4 +13,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added file size validation with warning message for files exceeding the limit
   - Updated UI caption to reflect new maximum upload limit
   - Renamed file from `wearable_sensor_draft_code_10_29.py` to `wearable_sensor_draft_code_11_03.py` to reflect current date
+  - Updated `.devcontainer/devcontainer.json` to reference the new filename in `openFiles` and `postAttachCommand` for codespace configuration
 
