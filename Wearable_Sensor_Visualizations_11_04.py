@@ -5,8 +5,8 @@ import pandas as pd
 import numpy as np
 import requests
 import re
-import subprocess, sys
 from io import BytesIO
+import altair as alt
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
@@ -324,13 +324,19 @@ try:
             st.info("Need at least two sensors to compute a correlation matrix.")
         else:
             corr = clean[num_cols].corr()
-            # ensure matplotlib is available for background_gradient
-            try:
-                import matplotlib  # noqa: F401
-            except ImportError:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
-                import matplotlib  # noqa: F401
-            st.dataframe(corr.style.background_gradient(cmap="RdYlGn"), use_container_width=True)
+            # Use Altair for correlation heatmap visualization
+            corr_df = corr.reset_index().melt(id_vars='index', var_name='sensor2', value_name='correlation')
+            corr_df = corr_df.rename(columns={'index': 'sensor1'})
+            heatmap = alt.Chart(corr_df).mark_rect().encode(
+                x=alt.X('sensor1:N', title='Sensor'),
+                y=alt.Y('sensor2:N', title='Sensor'),
+                color=alt.Color('correlation:Q', scale=alt.Scale(scheme='RdYlGn'), title='Correlation'),
+                tooltip=['sensor1', 'sensor2', 'correlation']
+            ).properties(
+                width=500,
+                height=500
+            )
+            st.altair_chart(heatmap, use_container_width=True)
     else:
         # Rolling correlation between two selected sensors
         roll_cols = [c for c in m.sensors_present if clean[c].notna().any()]
