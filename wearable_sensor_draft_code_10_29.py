@@ -327,7 +327,10 @@ with st.sidebar:
         )
         if uploaded is not None:
             size_mb = len(uploaded.getvalue()) / (1024 * 1024)
-            st.caption(f"File size: {size_mb:.2f} MB (Streamlit Cloud limit ≈ 200 MB)")
+            max_size_mb = 1000
+            if size_mb > max_size_mb:
+                st.warning(f"File size ({size_mb:.2f} MB) exceeds maximum allowed size ({max_size_mb} MB). This may cause performance issues.")
+            st.caption(f"File size: {size_mb:.2f} MB (Maximum upload limit: {max_size_mb} MB)")
     elif src_mode == "Local/server path":
         local_path = st.text_input("Enter full/local path to file")
         st.caption("Example: /Users/you/data/garrick_health_data_export.xml")
