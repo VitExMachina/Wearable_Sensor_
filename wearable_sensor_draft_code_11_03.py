@@ -1,4 +1,4 @@
-# app.py (single-file version with: XML/CSV/XLSX upload, local path, cloud link, GDrive fix)
+# app.py (single-file version with: big-file handling, cloud link fetch, HTML guard, SpO₂ scaling, friendlier errors)
 
 import streamlit as st
 import pandas as pd
@@ -9,7 +9,7 @@ from io import BytesIO
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
-from xml.etree.ElementTree import iterparse  # for streaming XML
+from xml.etree.ElementTree import iterparse  # streaming XML parser
 
 # =========================================================
 # 1) CORE
@@ -50,7 +50,8 @@ def validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     sensor_cols = [c for c in df.columns if c in ALLOWED_SENSORS]
     if not sensor_cols:
         raise ValueError(
-            f"No recognized sensor columns. Expected any of: {', '.join(sorted(ALLOWED_SENSORS))}"
+            "No recognized sensor columns. Expected any of: "
+            + ", ".join(sorted(ALLOWED_SENSORS))
         )
 
     for c in sensor_cols:
@@ -71,20 +72,16 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     sensor_cols = [c for c in df.columns if c in ALLOWED_SENSORS]
     daily_means, daily_max = resample_daily(df)
 
-    resting_hr = (
-        float(np.nanpercentile(df["heart_rate"], 5))
-        if "heart_rate" in sensor_cols
-        else None
-    )
+    # Guard against empty HR arrays
+    if "heart_rate" in sensor_cols:
+        hr_vals = df["heart_rate"].dropna()
+        resting_hr = float(np.nanpercentile(hr_vals, 5)) if len(hr_vals) else None
+    else:
+        resting_hr = None
+
     step_total = int(np.nansum(df["steps"])) if "steps" in sensor_cols else None
-    temp_mean = (
-        float(np.nanmean(df["temperature"])) if "temperature" in sensor_cols else None
-    )
-    spo2_mean = (
-        float(np.nanmean(df["oxygen_saturation"]))
-        if "oxygen_saturation" in sensor_cols
-        else None
-    )
+    temp_mean  = float(np.nanmean(df["temperature"])) if "temperature" in sensor_cols else None
+    spo2_mean  = float(np.nanmean(df["oxygen_saturation"])) if "oxygen_saturation" in sensor_cols else None
 
     t0, t1 = df["timestamp"].min(), df["timestamp"].max()
     duration_hours = (t1 - t0).total_seconds() / 3600.0 if len(df) else 0.0
@@ -104,40 +101,23 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     )
 
 # =========================================================
-# 2) INGEST (upload / path / cloud)
+# 2) INGEST (upload / path / cloud) + BIG FILES
 # =========================================================
-MAX_CHUNK = 100_000  # rows per chunk for big CSVs
+MAX_CHUNK = 100_000  # rows per chunk when reading large CSVs
 
 _ALIAS_RAW = {
-    "type": "@type",
-    "@type": "@type",
-    "creationDate": "@creationDate",
-    "@creationDate": "@creationDate",
-    "unit": "@unit",
-    "@unit": "@unit",
-    "value": "@value",
-    "@value": "@value",
+    "type": "@type", "@type": "@type",
+    "creationDate": "@creationDate", "@creationDate": "@creationDate",
+    "unit": "@unit", "@unit": "@unit",
+    "value": "@value", "@value": "@value",
 }
 _ALIAS_TIDY = {
-    "Timestamp": "timestamp",
-    "Time": "timestamp",
-    "timestamp": "timestamp",
-    "HeartRate": "heart_rate",
-    "HR": "heart_rate",
-    "heartRate": "heart_rate",
-    "heart_rate": "heart_rate",
-    "Steps": "steps",
-    "StepCount": "steps",
-    "steps": "steps",
-    "Temperature": "temperature",
-    "BodyTemp": "temperature",
-    "temperature": "temperature",
-    "WristTemperature": "wrist_temperature",
-    "wristTemperature": "wrist_temperature",
-    "wrist_temperature": "wrist_temperature",
-    "OxygenSaturation": "oxygen_saturation",
-    "oxygenSaturation": "oxygen_saturation",
-    "oxygen_saturation": "oxygen_saturation",
+    "Timestamp": "timestamp", "Time": "timestamp", "timestamp": "timestamp",
+    "HeartRate": "heart_rate", "HR": "heart_rate", "heartRate": "heart_rate", "heart_rate": "heart_rate",
+    "Steps": "steps", "StepCount": "steps", "steps": "steps",
+    "Temperature": "temperature", "BodyTemp": "temperature", "temperature": "temperature",
+    "WristTemperature": "wrist_temperature", "wristTemperature": "wrist_temperature", "wrist_temperature": "wrist_temperature",
+    "OxygenSaturation": "oxygen_saturation", "oxygenSaturation": "oxygen_saturation", "oxygen_saturation": "oxygen_saturation",
 }
 
 TYPE_MAP = {
@@ -155,7 +135,7 @@ def _normalize_tidy_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: _ALIAS_TIDY.get(c, c) for c in df.columns})
 
 def _read_xml_streaming(file_obj) -> pd.DataFrame:
-    """Streaming Apple Health XML reader for big XML exports."""
+    """Streaming Apple Health XML reader for large exports."""
     rows = []
     for event, elem in iterparse(file_obj):
         if elem.tag != "Record":
@@ -168,9 +148,11 @@ def _read_xml_streaming(file_obj) -> pd.DataFrame:
         rows.append(
             {
                 "@type": t,
-                "@creationDate": elem.attrib.get("creationDate")
-                or elem.attrib.get("endDate")
-                or elem.attrib.get("startDate"),
+                "@creationDate": (
+                    elem.attrib.get("creationDate")
+                    or elem.attrib.get("endDate")
+                    or elem.attrib.get("startDate")
+                ),
                 "@unit": elem.attrib.get("unit"),
                 "@value": elem.attrib.get("value"),
             }
@@ -179,13 +161,12 @@ def _read_xml_streaming(file_obj) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def _read_tabular_big(src, ext: str) -> pd.DataFrame:
-    """Read big CSVs in chunks; Excel as usual."""
+    """Read big CSVs in chunks; Excel normal."""
     if ext == ".csv":
-        chunks = pd.read_csv(src, chunksize=MAX_CHUNK)
         parts = []
-        for ch in chunks:
+        for ch in pd.read_csv(src, chunksize=MAX_CHUNK):
             parts.append(ch)
-        return pd.concat(parts, ignore_index=True)
+        return pd.concat(parts, ignore_index=True, copy=False)
     if ext in (".xlsx", ".xls"):
         return pd.read_excel(src)
     return pd.read_csv(src)
@@ -202,7 +183,7 @@ def ingest(source) -> pd.DataFrame:
             df = _read_tabular_big(source, ext)
         return _normalize_raw_cols(df)
 
-    # path-like (string path)
+    # path-like
     p = Path(str(source))
     ext = p.suffix.lower()
     if ext == ".xml":
@@ -217,36 +198,42 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     Download file from cloud/storage link and run through same ingestion.
     Supports:
       - direct http(s) links
-      - Google Drive "file/d/<ID>/view" links (public)
-      - Google Drive "open?id=<ID>" links (public)
-      - Dropbox links (force dl=1)
+      - Google Drive (file/d/<ID>/view, open?id=<ID>) public links
+      - Dropbox (?dl=0 -> ?dl=1)
+      - Raw GitHub URLs
     """
     url = url.strip()
 
-    # Google Drive: file/d/<id>/view
+    # Normalize common GDrive forms to direct download
     gd_file_match = re.search(r"https://drive\.google\.com/file/d/([^/]+)/", url)
     if gd_file_match:
         file_id = gd_file_match.group(1)
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-    # Google Drive: open?id=...
     gd_open_match = re.search(r"https://drive\.google\.com/open\?id=([^&]+)", url)
     if gd_open_match:
         file_id = gd_open_match.group(1)
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-    # Dropbox: turn ?dl=0 into ?dl=1
+    # Dropbox force download
     if "dropbox.com" in url and "dl=0" in url:
         url = url.replace("dl=0", "dl=1")
 
-    resp = requests.get(url, stream=True)
+    resp = requests.get(url, stream=True, timeout=60, allow_redirects=True)
     if resp.status_code in (401, 403):
         raise RuntimeError(
-            "Remote file is not publicly accessible (401/403).\n"
-            "If this is Google Drive, set sharing to 'Anyone with the link' "
-            "and try again, or use the 'uc?export=download&id=FILE_ID' link."
+            "Remote file isn’t public (401/403). For Google Drive, set sharing to "
+            "‘Anyone with the link’ or use the direct ‘uc?export=download&id=FILE_ID’ URL."
         )
     resp.raise_for_status()
+
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if "text/html" in ctype:
+        body = resp.text[:400].replace("\n", " ")
+        raise RuntimeError(
+            "Got HTML instead of data (likely a login/permissions page). "
+            f"First 400 chars: {body}"
+        )
 
     content = resp.content
     suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
@@ -257,52 +244,83 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     else:
         return _normalize_raw_cols(_read_tabular_big(bio, suffix))
 
+def _maybe_scale_spo2(series: pd.Series) -> pd.Series:
+    """If SpO₂ looks 0–1, scale to %."""
+    med = series.dropna().median()
+    if pd.notna(med) and med < 2:
+        return series * 100.0
+    return series
+
 def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
-    # if already tidy
+    # Already tidy?
     tidy = _normalize_tidy_cols(df_raw.copy())
     if "timestamp" in tidy.columns:
+        # Optional SpO₂ normalization if present
+        if "oxygen_saturation" in tidy.columns:
+            tidy["oxygen_saturation"] = _maybe_scale_spo2(tidy["oxygen_saturation"])
         return validate_and_clean(tidy)
 
+    # Apple Health raw?
     need = {"@type", "@creationDate", "@value"}
-    if not need.issubset(df_raw.columns):
-        raise ValueError("Unsupported format. Provide Apple Health export or tidy CSV.")
+    if need.issubset(df_raw.columns):
+        df = df_raw.rename(
+            columns={
+                "@type": "Biometric_Label",
+                "@creationDate": "Date",
+                "@value": "Value",
+            }
+        )
+        df["timestamp"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["Value"] = pd.to_numeric(df["Value"].astype(str).str.replace(",", "."), errors="coerce")
+        df = df.dropna(subset=["timestamp", "Value", "Biometric_Label"])
+        df["minute"] = df["timestamp"].dt.floor("T")
 
-    df = df_raw.rename(
-        columns={
-            "@type": "Biometric_Label",
-            "@creationDate": "Date",
-            "@value": "Value",
-        }
+        out = None
+        for t, (col, agg) in TYPE_MAP.items():
+            d = df[df["Biometric_Label"] == t]
+            if d.empty:
+                continue
+            g = d.groupby("minute")["Value"].agg(agg).rename(col).to_frame()
+            out = g if out is None else out.join(g, how="outer")
+
+        if out is None:
+            raise ValueError("No supported biometric types found in file.")
+
+        out = (
+            out.reset_index()
+            .rename(columns={"minute": "timestamp"})
+            .sort_values("timestamp")
+        )
+
+        # Drop rows where all sensors are NaN
+        sensor_cols = list(set(v[0] for v in TYPE_MAP.values()))
+        out = out.dropna(how="all", subset=sensor_cols)
+
+        # Normalize SpO₂ if needed
+        if "oxygen_saturation" in out.columns:
+            out["oxygen_saturation"] = _maybe_scale_spo2(out["oxygen_saturation"])
+
+        return validate_and_clean(out)
+
+    # Last resort: try to guess a timestamp column by name and validate
+    dt_guess = [c for c in df_raw.columns if "date" in c.lower() or "time" in c.lower()]
+    if dt_guess:
+        guess = df_raw.rename(columns={dt_guess[0]: "timestamp"})
+        guess = _normalize_tidy_cols(guess)
+        try:
+            return validate_and_clean(guess)
+        except Exception as e:
+            cols_preview = list(df_raw.columns)[:12]
+            raise ValueError(
+                f"Tried '{dt_guess[0]}' as timestamp but failed: {e}\n"
+                f"Columns seen: {cols_preview}"
+            )
+
+    cols_preview = list(df_raw.columns)[:12]
+    raise ValueError(
+        "Unsupported format. Provide Apple Health export or a tidy CSV.\n"
+        f"Columns seen: {cols_preview}"
     )
-    df["timestamp"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Value"] = pd.to_numeric(
-        df["Value"].astype(str).str.replace(",", "."),
-        errors="coerce",
-    )
-    df = df.dropna(subset=["timestamp", "Value", "Biometric_Label"])
-    df["minute"] = df["timestamp"].dt.floor("T")
-
-    out = None
-    for t, (col, agg) in TYPE_MAP.items():
-        d = df[df["Biometric_Label"] == t]
-        if d.empty:
-            continue
-        g = d.groupby("minute")["Value"].agg(agg).rename(col).to_frame()
-        out = g if out is None else out.join(g, how="outer")
-
-    if out is None:
-        raise ValueError("No supported biometric types found in file.")
-
-    out = (
-        out.reset_index()
-        .rename(columns={"minute": "timestamp"})
-        .sort_values("timestamp")
-    )
-
-    sensor_cols = list(set(v[0] for v in TYPE_MAP.values()))
-    out = out.dropna(how="all", subset=sensor_cols)
-
-    return validate_and_clean(out)
 
 # =========================================================
 # 3) STREAMLIT UI
@@ -312,7 +330,7 @@ st.title("⌚ Wearable Sensor Data Analyzer")
 
 with st.sidebar:
     src_mode = st.radio(
-        "Select data source:",
+        "Select data source",
         ["Upload file", "Local/server path", "Cloud / storage link"],
     )
 
@@ -324,21 +342,24 @@ with st.sidebar:
         uploaded = st.file_uploader(
             "Upload Apple Health export (.xml / .csv / .xlsx) or tidy CSV",
             type=["xml", "csv", "xlsx"],
+            help=(
+                "If your file is very large, consider the Cloud link option below. "
+                "Apple Health XML is supported; CSV/XLSX should include Apple columns "
+                "(@type, @creationDate, @value) or tidy columns (timestamp, heart_rate, etc.)."
+            ),
         )
         if uploaded is not None:
             size_mb = len(uploaded.getvalue()) / (1024 * 1024)
-            max_size_mb = 1000
-            if size_mb > max_size_mb:
-                st.warning(f"File size ({size_mb:.2f} MB) exceeds maximum allowed size ({max_size_mb} MB). This may cause performance issues.")
-            st.caption(f"File size: {size_mb:.2f} MB (Maximum upload limit: {max_size_mb} MB)")
+            st.caption(f"Uploaded file size: {size_mb:.2f} MB")
     elif src_mode == "Local/server path":
         local_path = st.text_input("Enter full/local path to file")
         st.caption("Example: /Users/you/data/garrick_health_data_export.xml")
     else:  # Cloud / storage link
         cloud_url = st.text_input("Enter cloud URL (S3 / Dropbox / public Google Drive / raw GitHub)")
         st.caption(
-            "For Google Drive, make the file public OR use this format:\n"
-            "https://drive.google.com/uc?export=download&id=FILE_ID"
+            "For Google Drive, ensure the file is public OR use this format:\n"
+            "https://drive.google.com/uc?export=download&id=FILE_ID\n"
+            "If you get an HTML/login page, the app will show the first 400 chars for debugging."
         )
 
     st.caption(
@@ -346,7 +367,7 @@ with st.sidebar:
         "wrist_temperature, oxygen_saturation."
     )
 
-# decide source
+# Decide source
 if src_mode == "Upload file" and not uploaded:
     st.info("Upload a file to begin.")
     st.stop()
