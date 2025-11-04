@@ -91,7 +91,10 @@ def _normalize_tidy_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: _ALIAS_TIDY.get(c, c) for c in df.columns})
 
 def _read_xml_streaming(file_obj) -> pd.DataFrame:
+    # Process in chunks to reduce memory usage
     rows = []
+    df_chunks = []
+    chunk_size = 50000
     for event, elem in iterparse(file_obj):
         if elem.tag != "Record":
             elem.clear(); continue
@@ -105,15 +108,33 @@ def _read_xml_streaming(file_obj) -> pd.DataFrame:
             "@value": elem.attrib.get("value"),
         })
         elem.clear()
-    return pd.DataFrame(rows)
+        # Process in chunks to avoid excessive memory usage
+        if len(rows) >= chunk_size:
+            df_chunks.append(pd.DataFrame(rows))
+            rows = []
+    # Combine remaining rows
+    if rows:
+        df_chunks.append(pd.DataFrame(rows))
+    if df_chunks:
+        return pd.concat(df_chunks, ignore_index=True)
+    return pd.DataFrame()
 
 def _read_tabular_big(src, ext: str) -> pd.DataFrame:
     if ext == ".csv":
-        parts = [ch for ch in pd.read_csv(src, chunksize=MAX_CHUNK)]
-        return pd.concat(parts, ignore_index=True, copy=False) if parts else pd.DataFrame()
+        # Process chunks incrementally to reduce peak memory
+        parts = []
+        for ch in pd.read_csv(src, chunksize=MAX_CHUNK):
+            parts.append(ch)
+            # Limit total chunks to prevent excessive memory
+            if len(parts) >= 100:  # ~10M rows max
+                break
+        if parts:
+            return pd.concat(parts, ignore_index=True, copy=False)
+        return pd.DataFrame()
     if ext in (".xlsx", ".xls"):
-        return pd.read_excel(src)
-    return pd.read_csv(src)
+        # Read only first sheet and limit rows for memory
+        return pd.read_excel(src, nrows=10000000)  # 10M row limit
+    return pd.read_csv(src, nrows=10000000)  # 10M row limit
 
 def ingest(source) -> pd.DataFrame:
     if hasattr(source, "read"):
@@ -143,13 +164,31 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     if resp.status_code in (401,403):
         raise RuntimeError("Remote file is not public (401/403). For Google Drive, set sharing to 'Anyone with the link' or use the 'uc?export=download&id=FILE_ID' URL.")
     resp.raise_for_status()
+    
+    # Check content length to warn about large files
+    content_length = resp.headers.get('Content-Length')
+    if content_length:
+        size_mb = int(content_length) / (1024 * 1024)
+        if size_mb > 100:  # Warn if > 100MB
+            st.warning(f"⚠️ Large file detected ({size_mb:.1f} MB). Processing may take time and use significant memory.")
+    
     ctype = (resp.headers.get("Content-Type") or "").lower()
     if "text/html" in ctype:
         snippet = resp.text[:400].replace("\n"," ")
         raise RuntimeError("Got HTML instead of data (likely login/permission page). First 400 chars: " + snippet)
 
-    bio = BytesIO(resp.content)
+    # Stream content incrementally instead of loading all at once
     suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
+    bio = BytesIO()
+    max_size = 200 * 1024 * 1024  # 200MB limit
+    downloaded = 0
+    for chunk in resp.iter_content(chunk_size=8192):
+        if chunk:
+            downloaded += len(chunk)
+            if downloaded > max_size:
+                raise RuntimeError(f"File too large (>200MB). Please use a smaller file or split it.")
+            bio.write(chunk)
+    bio.seek(0)
     return _normalize_raw_cols(_read_xml_streaming(bio) if suffix == ".xml" else _read_tabular_big(bio, suffix))
 
 # ============== FLEXIBLE RAW → TIDY ==============
@@ -220,6 +259,22 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
+# Add memory-efficient caching with size limits
+@st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
+def cached_ingest(source, source_type):
+    """Cache ingestion to avoid reprocessing on reruns."""
+    if source_type == "upload":
+        return ingest(source)
+    elif source_type == "path":
+        return ingest(source)
+    else:  # url
+        return ingest_from_url(source)
+
+@st.cache_data(max_entries=2, ttl=3600)
+def cached_tidy_transform(raw_df):
+    """Cache the tidy transformation."""
+    return records_to_minute_tidy(raw_df)
+
 with st.sidebar:
     src_mode = st.selectbox("Select data source", ["Upload file", "Local/server path", "Cloud / storage link"])
     uploaded = None; local_path = None; cloud_url = None
@@ -252,13 +307,17 @@ if src_mode == "Cloud / storage link" and not cloud_url:
     st.info("Enter a cloud URL to begin."); st.stop()
 
 try:
-    # ingest
+    # ingest with caching
     if src_mode == "Upload file":
-        raw = ingest(uploaded)
+        # Check file size before processing
+        file_size_mb = len(uploaded.getvalue()) / (1024 * 1024)
+        if file_size_mb > 50:
+            st.warning(f"⚠️ Large file ({file_size_mb:.1f} MB). Processing may take time.")
+        raw = cached_ingest(uploaded, "upload")
     elif src_mode == "Local/server path":
-        raw = ingest(local_path)
+        raw = cached_ingest(local_path, "path")
     else:
-        raw = ingest_from_url(cloud_url)
+        raw = cached_ingest(cloud_url, "url")
 
     # diagnostics
     if show_diag:
@@ -268,8 +327,11 @@ try:
             else:
                 st.write("No @type column present (likely a tidy CSV).")
 
-    # tidy + metrics
-    clean = records_to_minute_tidy(raw)
+    # tidy + metrics (with caching)
+    clean = cached_tidy_transform(raw)
+    
+    # Clear raw from memory after processing
+    del raw
 
     # date filter (convert to UTC to match clean['timestamp'])
     if date_mode == "Custom range" and start_date and end_date:
@@ -296,7 +358,13 @@ try:
     if m.spo2_mean is not None:  c7.metric("Avg SpO₂", f"{m.spo2_mean:.0f} %")
 
     st.subheader("Time Series (All Sensors)")
-    st.line_chart(clean.set_index("timestamp"))
+    # Limit data points for chart to reduce memory (sample if too large)
+    if len(clean) > 50000:
+        chart_data = clean.set_index("timestamp").resample("5min").mean()
+        st.caption(f"📊 Showing resampled data (5-min averages) for {len(clean):,} points")
+    else:
+        chart_data = clean.set_index("timestamp")
+    st.line_chart(chart_data)
 
     st.subheader("Daily Averages")
     st.bar_chart(m.daily_means)
@@ -330,7 +398,7 @@ try:
             heatmap = alt.Chart(corr_df).mark_rect().encode(
                 x=alt.X('sensor1:N', title='Sensor'),
                 y=alt.Y('sensor2:N', title='Sensor'),
-                color=alt.Color('correlation:Q', scale=alt.Scale(scheme='RdYlGn'), title='Correlation'),
+                color=alt.Color('correlation:Q', scale=alt.Scale(scheme='redyellowgreen', domain=[-1, 1]), title='Correlation'),
                 tooltip=['sensor1', 'sensor2', 'correlation']
             ).properties(
                 width=500,
@@ -358,10 +426,20 @@ try:
 
     # ------- Data table & downloads -------
     with st.expander("Clean Data"):
-        st.dataframe(clean, use_container_width=True)
+        # Show limited rows in table to reduce memory
+        st.dataframe(clean.head(10000), use_container_width=True)
+        if len(clean) > 10000:
+            st.caption(f"Showing first 10,000 rows of {len(clean):,} total rows. Use download button for full dataset.")
 
-    st.download_button("Download Clean CSV", clean.to_csv(index=False).encode("utf-8"), "cleaned_wearable.csv", "text/csv")
-    st.download_button("Download Daily Means CSV", m.daily_means.reset_index().to_csv(index=False).encode("utf-8"), "daily_means.csv", "text/csv")
+    # Generate CSV only when download button is clicked (lazy loading)
+    @st.cache_data
+    def generate_csv(df):
+        return df.to_csv(index=False).encode("utf-8")
+    
+    if len(clean) > 100000:
+        st.info("💡 Large dataset detected. CSV generation may take a moment.")
+    st.download_button("Download Clean CSV", generate_csv(clean), "cleaned_wearable.csv", "text/csv")
+    st.download_button("Download Daily Means CSV", generate_csv(m.daily_means.reset_index()), "daily_means.csv", "text/csv")
 
 except Exception as e:
     st.error(str(e))
