@@ -271,7 +271,22 @@ try:
     st.line_chart(clean.set_index("timestamp"))
 
     st.subheader("Daily Averages")
-    st.bar_chart(m.daily_means)
+    # Filter by sensor
+    available_sensors = [col for col in m.daily_means.columns if col in ALLOWED_SENSORS]
+    if available_sensors:
+        selected_sensors = st.multiselect(
+            "Filter sensors to display",
+            options=available_sensors,
+            default=available_sensors,
+            key="daily_avg_filter"
+        )
+        if selected_sensors:
+            filtered_daily_means = m.daily_means[selected_sensors]
+            st.bar_chart(filtered_daily_means)
+        else:
+            st.info("Select at least one sensor to display.")
+    else:
+        st.bar_chart(m.daily_means)
 
     with st.expander("Clean Data"):
         st.dataframe(clean, use_container_width=True)
