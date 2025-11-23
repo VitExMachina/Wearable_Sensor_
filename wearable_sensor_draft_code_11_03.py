@@ -215,6 +215,27 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
+# Add caching for expensive operations
+@st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
+def cached_ingest(source, source_type):
+    """Cache ingestion to avoid reprocessing on reruns."""
+    if source_type == "upload":
+        return ingest(source)
+    elif source_type == "path":
+        return ingest(source)
+    else:  # url
+        return ingest_from_url(source)
+
+@st.cache_data(max_entries=2, ttl=3600)
+def cached_tidy_transform(raw_df):
+    """Cache the tidy transformation."""
+    return records_to_minute_tidy(raw_df)
+
+@st.cache_data(max_entries=2, ttl=3600)
+def cached_compute_metrics(clean_df):
+    """Cache metrics computation."""
+    return compute_metrics(clean_df)
+
 with st.sidebar:
     src_mode = st.radio("Select data source", ["Upload file", "Local/server path", "Cloud / storage link"])
     uploaded = None; local_path = None; cloud_url = None
@@ -237,12 +258,16 @@ if src_mode == "Cloud / storage link" and not cloud_url:
     st.info("Enter a cloud URL to begin."); st.stop()
 
 try:
+    # Use cached ingestion
     if src_mode == "Upload file":
-        raw = ingest(uploaded)
+        file_size_mb = len(uploaded.getvalue()) / (1024 * 1024)
+        if file_size_mb > 50:
+            st.warning(f"⚠️ Large file ({file_size_mb:.1f} MB). Processing may take time.")
+        raw = cached_ingest(uploaded, "upload")
     elif src_mode == "Local/server path":
-        raw = ingest(local_path)
+        raw = cached_ingest(local_path, "path")
     else:
-        raw = ingest_from_url(cloud_url)
+        raw = cached_ingest(cloud_url, "url")
 
     # Optional quick diagnostics: what @type values exist?
     if show_diag:
@@ -253,8 +278,11 @@ try:
             else:
                 st.write("No @type column present (likely a tidy CSV).")
 
-    clean = records_to_minute_tidy(raw)
-    m = compute_metrics(clean)
+    # Use cached transformations
+    clean = cached_tidy_transform(raw)
+    # Clear raw from memory after processing
+    del raw
+    m = cached_compute_metrics(clean)
 
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("Rows", f"{m.n_rows:,}")
@@ -268,10 +296,67 @@ try:
     if m.spo2_mean is not None:  c7.metric("Avg SpO₂", f"{m.spo2_mean:.0f} %")
 
     st.subheader("Time Series")
-    st.line_chart(clean.set_index("timestamp"))
+    # Filter by sensor
+    available_sensors_ts = [col for col in clean.columns if col in ALLOWED_SENSORS]
+    if available_sensors_ts:
+        selected_sensors_ts = st.multiselect(
+            "Filter sensors to display",
+            options=available_sensors_ts,
+            default=available_sensors_ts,
+            key="time_series_filter"
+        )
+        if selected_sensors_ts:
+            filtered_clean = clean[["timestamp"] + selected_sensors_ts]
+            st.line_chart(filtered_clean.set_index("timestamp"))
+        else:
+            st.info("Select at least one sensor to display.")
+    else:
+        st.line_chart(clean.set_index("timestamp"))
+
+    st.subheader("Sensor Comparison")
+    # Compare two sensors
+    available_sensors_compare = [col for col in clean.columns if col in ALLOWED_SENSORS]
+    if len(available_sensors_compare) >= 2:
+        col1, col2 = st.columns(2)
+        with col1:
+            sensor1 = st.selectbox(
+                "Select first sensor",
+                options=available_sensors_compare,
+                key="sensor1_compare"
+            )
+        with col2:
+            sensor2 = st.selectbox(
+                "Select second sensor",
+                options=[s for s in available_sensors_compare if s != sensor1],
+                key="sensor2_compare"
+            )
+        if sensor1 and sensor2:
+            comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp")
+            st.line_chart(comparison_data)
+        else:
+            st.info("Please select two sensors to compare.")
+    elif len(available_sensors_compare) == 1:
+        st.info(f"Only one sensor ({available_sensors_compare[0]}) is available. Need at least two sensors for comparison.")
+    else:
+        st.info("No sensors available for comparison.")
 
     st.subheader("Daily Averages")
-    st.bar_chart(m.daily_means)
+    # Filter by sensor
+    available_sensors = [col for col in m.daily_means.columns if col in ALLOWED_SENSORS]
+    if available_sensors:
+        selected_sensors = st.multiselect(
+            "Filter sensors to display",
+            options=available_sensors,
+            default=available_sensors,
+            key="daily_avg_filter"
+        )
+        if selected_sensors:
+            filtered_daily_means = m.daily_means[selected_sensors]
+            st.bar_chart(filtered_daily_means)
+        else:
+            st.info("Select at least one sensor to display.")
+    else:
+        st.bar_chart(m.daily_means)
 
     with st.expander("Clean Data"):
         st.dataframe(clean, use_container_width=True)
