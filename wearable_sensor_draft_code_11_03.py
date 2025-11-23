@@ -270,7 +270,7 @@ try:
     st.subheader("Time Series")
     st.line_chart(clean.set_index("timestamp"))
 
-     st.subheader("Sensor Comparison")
+    st.subheader("Sensor Comparison")
     # Compare two sensors
     available_sensors_compare = [col for col in clean.columns if col in ALLOWED_SENSORS]
     if len(available_sensors_compare) >= 2:
