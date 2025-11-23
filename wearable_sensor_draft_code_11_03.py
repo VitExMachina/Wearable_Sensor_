@@ -340,33 +340,6 @@ try:
     else:
         st.info("No sensors available for comparison.")
 
-    st.subheader("Sensor Comparison")
-    # Compare two sensors
-    available_sensors_compare = [col for col in clean.columns if col in ALLOWED_SENSORS]
-    if len(available_sensors_compare) >= 2:
-        col1, col2 = st.columns(2)
-        with col1:
-            sensor1 = st.selectbox(
-                "Select first sensor",
-                options=available_sensors_compare,
-                key="sensor1_compare"
-            )
-        with col2:
-            sensor2 = st.selectbox(
-                "Select second sensor",
-                options=[s for s in available_sensors_compare if s != sensor1],
-                key="sensor2_compare"
-            )
-        if sensor1 and sensor2:
-            comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp")
-            st.line_chart(comparison_data)
-        else:
-            st.info("Please select two sensors to compare.")
-    elif len(available_sensors_compare) == 1:
-        st.info(f"Only one sensor ({available_sensors_compare[0]}) is available. Need at least two sensors for comparison.")
-    else:
-        st.info("No sensors available for comparison.")
-
     st.subheader("Daily Averages")
     # Filter by sensor
     available_sensors = [col for col in m.daily_means.columns if col in ALLOWED_SENSORS]
