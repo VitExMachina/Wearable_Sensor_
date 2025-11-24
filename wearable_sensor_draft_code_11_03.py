@@ -288,11 +288,30 @@ try:
             else:
                 st.write("No @type column present (likely a tidy CSV).")
 
+     #Date range filter (UTC-safe)
+    date_mode = st.selectbox("Date filter", ["All dates", "Custom range"])
+    start_date = end_date = None
+    if date_mode == "Custom range":
+        start_date = st.date_input("Start date")
+        end_date   = st.date_input("End date")
+
     # Use cached transformations
     clean = cached_tidy_transform(raw)
     # Clear raw from memory after processing
     del raw
-    
+
+    #date filter (convert to UTC to match clean['timestamp'])
+    if date_mode == "Custom range" and start_date and end_date:
+        start_ts = pd.to_datetime(start_date).tz_localize("UTC")
+        # include the full end day
+        end_ts = pd.to_datetime(end_date).tz_localize("UTC") + pd.Timedelta(days=1)
+        clean = clean[(clean["timestamp"] >= start_ts) & (clean["timestamp"] < end_ts)]
+
+    if clean.empty:
+        st.warning("No data after filtering. Adjust your date range.")
+        st.stop()
+
+ 
     m = cached_compute_metrics(clean)
 
     c1,c2,c3,c4,c5 = st.columns(5)
