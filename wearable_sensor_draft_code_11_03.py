@@ -224,10 +224,6 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
-# Initialize date filter variables
-use_date_filter = False
-date_start = None
-date_end = None
 
 # Add caching for expensive operations
 @st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
@@ -263,11 +259,6 @@ with st.sidebar:
         cloud_url = st.text_input("Enter cloud URL (S3 / Dropbox / public Google Drive / raw GitHub)")
         st.caption("Google Drive tip: use https://drive.google.com/uc?export=download&id=FILE_ID and make the file public.")
     show_diag = st.checkbox("Show raw type counts (diagnostics)")
-    
-    # Date range filter
-    st.divider()
-    st.subheader("📅 Date Range Filter")
-    use_date_filter = st.checkbox("Filter by date range", value=False)
 
 if src_mode == "Upload file" and not uploaded:
     st.info("Upload a file to begin."); st.stop()
@@ -301,46 +292,6 @@ try:
     clean = cached_tidy_transform(raw)
     # Clear raw from memory after processing
     del raw
-    
-    # Get available dates for dropdown (before filtering)
-    available_dates = sorted(clean["timestamp"].dt.date.unique()) if not clean.empty else []
-    date_options = ["All"] + [str(d) for d in available_dates] if available_dates else ["All"]
-    
-    # Date range filter dropdowns (shown after data is loaded)
-    if use_date_filter and available_dates:
-        st.subheader("📅 Select Date Range")
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            date_start_str = st.selectbox(
-                "Start date",
-                options=date_options,
-                index=0,
-                key="date_start_dropdown"
-            )
-        with col_date2:
-            date_end_str = st.selectbox(
-                "End date",
-                options=date_options,
-                index=len(date_options)-1 if len(date_options) > 1 else 0,
-                key="date_end_dropdown"
-            )
-        
-        # Convert string dates to date objects
-        date_start = pd.to_datetime(date_start_str).date() if date_start_str and date_start_str != "All" else None
-        date_end = pd.to_datetime(date_end_str).date() if date_end_str and date_end_str != "All" else None
-        
-        # Apply date range filter
-        if date_start is not None:
-            clean = clean[clean["timestamp"].dt.date >= date_start]
-        if date_end is not None:
-            # Include the full end date (up to end of day)
-            clean = clean[clean["timestamp"].dt.date <= date_end]
-        
-        if clean.empty:
-            st.warning("⚠️ No data available for the selected date range. Please adjust your filters.")
-            st.stop()
-        else:
-            st.info(f"📊 Showing data from {date_start_str or 'start'} to {date_end_str or 'end'} ({len(clean):,} rows)")
     
     m = cached_compute_metrics(clean)
 
