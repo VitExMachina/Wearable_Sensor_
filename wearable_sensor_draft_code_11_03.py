@@ -56,8 +56,8 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     daily_means, daily_max = resample_daily(df)
     resting_hr = float(np.nanpercentile(df["heart_rate"].dropna(), 5)) if "heart_rate" in sens and df["heart_rate"].notna().any() else None
     step_total = int(np.nansum(df["steps"])) if "steps" in sens else None
-    temp_mean  = float(np.nanmean(df["temperature"])) if "temperature" in sens else None
-    spo2_mean  = float(np.nanmean(df["oxygen_saturation"])) if "oxygen_saturation" in sens else None
+    temp_mean  = float(np.nanmean(df["temperature"])) if "temperature" in sens and df["temperature"].notna().any() else None
+    spo2_mean  = float(np.nanmean(df["oxygen_saturation"])) if "oxygen_saturation" in sens and df["oxygen_saturation"].notna().any() else None
     t0, t1 = df["timestamp"].min(), df["timestamp"].max()
     duration_hours = (t1 - t0).total_seconds()/3600.0 if len(df) else 0.0
     return Metrics(len(df), t0, t1, duration_hours, sens, daily_means, daily_max, resting_hr, step_total, temp_mean, spo2_mean)
@@ -386,7 +386,7 @@ try:
         st.bar_chart(m.daily_means)
 
     with st.expander("Clean Data"):
-        st.dataframe(clean, use_container_width=True)
+        st.dataframe(clean, width='stretch')
 
     st.download_button("Download Clean CSV", clean.to_csv(index=False).encode("utf-8"), "cleaned_wearable.csv", "text/csv")
     st.download_button("Download Daily Means CSV", m.daily_means.reset_index().to_csv(index=False).encode("utf-8"), "daily_means.csv", "text/csv")
