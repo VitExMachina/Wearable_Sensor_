@@ -149,6 +149,30 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
     return _normalize_raw_cols(_read_xml_streaming(bio) if suffix == ".xml" else _read_tabular_big(bio, suffix))
 
+# =========== NORMALIZATION FUNCTIONS ===========
+def normalize_min_max(series: pd.Series) -> pd.Series:
+    """Normalize series to 0-1 range using min-max scaling."""
+    min_val = series.min()
+    max_val = series.max()
+    if pd.isna(min_val) or pd.isna(max_val) or (max_val - min_val) == 0:
+        return series
+    return (series - min_val) / (max_val - min_val)
+
+def normalize_zscore(series: pd.Series) -> pd.Series:
+    """Normalize series using z-score (standardization)."""
+    mean_val = series.mean()
+    std_val = series.std()
+    if pd.isna(mean_val) or pd.isna(std_val) or std_val == 0:
+        return series
+    return (series - mean_val) / std_val
+
+def normalize_percentage_max(series: pd.Series) -> pd.Series:
+    """Normalize series as percentage of maximum value (0-100%)."""
+    max_val = series.max()
+    if pd.isna(max_val) or max_val == 0:
+        return series
+    return (series / max_val) * 100
+
 # =========== FLEXIBLE RAW → TIDY ===========
 def _maybe_scale_spo2(series: pd.Series) -> pd.Series:
     med = series.dropna().median()
@@ -330,8 +354,32 @@ try:
                 options=[s for s in available_sensors_compare if s != sensor1],
                 key="sensor2_compare"
             )
+        
+        # Normalization option
+        normalize_option = st.radio(
+            "Normalization method (for better comparison across different scales):",
+            ["None", "Min-Max (0-1)", "Z-Score (Standardized)", "Percentage of Max (0-100%)"],
+            horizontal=True,
+            key="normalize_method"
+        )
+        
         if sensor1 and sensor2:
-            comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp")
+            comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp").copy()
+            
+            # Apply normalization if selected
+            if normalize_option == "Min-Max (0-1)":
+                comparison_data[sensor1] = normalize_min_max(comparison_data[sensor1])
+                comparison_data[sensor2] = normalize_min_max(comparison_data[sensor2])
+                st.caption("📊 Data normalized to 0-1 range for comparison")
+            elif normalize_option == "Z-Score (Standardized)":
+                comparison_data[sensor1] = normalize_zscore(comparison_data[sensor1])
+                comparison_data[sensor2] = normalize_zscore(comparison_data[sensor2])
+                st.caption("📊 Data standardized (z-score) for comparison")
+            elif normalize_option == "Percentage of Max (0-100%)":
+                comparison_data[sensor1] = normalize_percentage_max(comparison_data[sensor1])
+                comparison_data[sensor2] = normalize_percentage_max(comparison_data[sensor2])
+                st.caption("📊 Data shown as percentage of maximum value")
+            
             st.line_chart(comparison_data)
         else:
             st.info("Please select two sensors to compare.")
