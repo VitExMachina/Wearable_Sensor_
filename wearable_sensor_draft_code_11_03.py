@@ -255,9 +255,9 @@ def cached_tidy_transform(raw_df):
     """Cache the tidy transformation."""
     return records_to_minute_tidy(raw_df)
 
-@st.cache_data(max_entries=2, ttl=3600)
+@st.cache_resource(max_entries=2)
 def cached_compute_metrics(clean_df):
-    """Cache metrics computation."""
+    """Cache metrics computation. Uses cache_resource because Metrics contains DataFrames."""
     return compute_metrics(clean_df)
 
 with st.sidebar:
