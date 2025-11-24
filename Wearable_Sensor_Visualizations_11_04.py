@@ -268,6 +268,28 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
+# Add caching for expensive operations
+@st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
+def cached_ingest(source, source_type):
+    """Cache ingestion to avoid reprocessing on reruns."""
+    if source_type == "upload":
+        return ingest(source)
+    elif source_type == "path":
+        return ingest(source)
+    else:  # url
+        return ingest_from_url(source)
+
+@st.cache_data(max_entries=2, ttl=3600)
+def cached_tidy_transform(raw_df):
+    """Cache the tidy transformation."""
+    return records_to_minute_tidy(raw_df)
+
+@st.cache_resource(max_entries=2)
+def cached_compute_metrics(clean_df):
+    """Cache metrics computation. Uses cache_resource because Metrics contains DataFrames."""
+    return compute_metrics(clean_df)
+
+
 # Add memory-efficient caching with size limits
 @st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
 def cached_ingest(source, source_type):
