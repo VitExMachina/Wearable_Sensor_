@@ -150,14 +150,6 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     return _normalize_raw_cols(_read_xml_streaming(bio) if suffix == ".xml" else _read_tabular_big(bio, suffix))
 
 # =========== NORMALIZATION FUNCTIONS ===========
-def normalize_min_max(series: pd.Series) -> pd.Series:
-    """Normalize series to 0-1 range using min-max scaling."""
-    min_val = series.min()
-    max_val = series.max()
-    if pd.isna(min_val) or pd.isna(max_val) or (max_val - min_val) == 0:
-        return series
-    return (series - min_val) / (max_val - min_val)
-
 def normalize_zscore(series: pd.Series) -> pd.Series:
     """Normalize series using z-score (standardization)."""
     mean_val = series.mean()
@@ -165,13 +157,6 @@ def normalize_zscore(series: pd.Series) -> pd.Series:
     if pd.isna(mean_val) or pd.isna(std_val) or std_val == 0:
         return series
     return (series - mean_val) / std_val
-
-def normalize_percentage_max(series: pd.Series) -> pd.Series:
-    """Normalize series as percentage of maximum value (0-100%)."""
-    max_val = series.max()
-    if pd.isna(max_val) or max_val == 0:
-        return series
-    return (series / max_val) * 100
 
 # =========== FLEXIBLE RAW → TIDY ===========
 def _maybe_scale_spo2(series: pd.Series) -> pd.Series:
@@ -283,12 +268,6 @@ with st.sidebar:
     st.divider()
     st.subheader("📅 Date Range Filter")
     use_date_filter = st.checkbox("Filter by date range", value=False)
-    if use_date_filter:
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            date_start = st.date_input("Start date", value=None, key="date_start")
-        with col_date2:
-            date_end = st.date_input("End date", value=None, key="date_end")
 
 if src_mode == "Upload file" and not uploaded:
     st.info("Upload a file to begin."); st.stop()
@@ -323,8 +302,34 @@ try:
     # Clear raw from memory after processing
     del raw
     
-    # Apply date range filter if enabled
-    if use_date_filter:
+    # Get available dates for dropdown (before filtering)
+    available_dates = sorted(clean["timestamp"].dt.date.unique()) if not clean.empty else []
+    date_options = ["All"] + [str(d) for d in available_dates] if available_dates else ["All"]
+    
+    # Date range filter dropdowns (shown after data is loaded)
+    if use_date_filter and available_dates:
+        st.subheader("📅 Select Date Range")
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            date_start_str = st.selectbox(
+                "Start date",
+                options=date_options,
+                index=0,
+                key="date_start_dropdown"
+            )
+        with col_date2:
+            date_end_str = st.selectbox(
+                "End date",
+                options=date_options,
+                index=len(date_options)-1 if len(date_options) > 1 else 0,
+                key="date_end_dropdown"
+            )
+        
+        # Convert string dates to date objects
+        date_start = pd.to_datetime(date_start_str).date() if date_start_str and date_start_str != "All" else None
+        date_end = pd.to_datetime(date_end_str).date() if date_end_str and date_end_str != "All" else None
+        
+        # Apply date range filter
         if date_start is not None:
             clean = clean[clean["timestamp"].dt.date >= date_start]
         if date_end is not None:
@@ -335,7 +340,7 @@ try:
             st.warning("⚠️ No data available for the selected date range. Please adjust your filters.")
             st.stop()
         else:
-            st.info(f"📊 Showing data from {date_start or 'start'} to {date_end or 'end'} ({len(clean):,} rows)")
+            st.info(f"📊 Showing data from {date_start_str or 'start'} to {date_end_str or 'end'} ({len(clean):,} rows)")
     
     m = cached_compute_metrics(clean)
 
@@ -386,10 +391,10 @@ try:
                 key="sensor2_compare"
             )
         
-        # Normalization option
+        # Normalization option (only Z-Score)
         normalize_option = st.radio(
             "Normalization method (for better comparison across different scales):",
-            ["None", "Min-Max (0-1)", "Z-Score (Standardized)", "Percentage of Max (0-100%)"],
+            ["None", "Z-Score (Standardized)"],
             horizontal=True,
             key="normalize_method"
         )
@@ -398,18 +403,10 @@ try:
             comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp").copy()
             
             # Apply normalization if selected
-            if normalize_option == "Min-Max (0-1)":
-                comparison_data[sensor1] = normalize_min_max(comparison_data[sensor1])
-                comparison_data[sensor2] = normalize_min_max(comparison_data[sensor2])
-                st.caption("📊 Data normalized to 0-1 range for comparison")
-            elif normalize_option == "Z-Score (Standardized)":
+            if normalize_option == "Z-Score (Standardized)":
                 comparison_data[sensor1] = normalize_zscore(comparison_data[sensor1])
                 comparison_data[sensor2] = normalize_zscore(comparison_data[sensor2])
                 st.caption("📊 Data standardized (z-score) for comparison")
-            elif normalize_option == "Percentage of Max (0-100%)":
-                comparison_data[sensor1] = normalize_percentage_max(comparison_data[sensor1])
-                comparison_data[sensor2] = normalize_percentage_max(comparison_data[sensor2])
-                st.caption("📊 Data shown as percentage of maximum value")
             
             st.line_chart(comparison_data)
         else:
