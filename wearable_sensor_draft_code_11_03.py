@@ -407,8 +407,20 @@ try:
     with st.expander("Clean Data"):
         st.dataframe(clean, width='stretch')
 
-    st.download_button("Download Clean CSV", clean.to_csv(index=False).encode("utf-8"), "cleaned_wearable.csv", "text/csv")
-    st.download_button("Download Daily Means CSV", m.daily_means.reset_index().to_csv(index=False).encode("utf-8"), "daily_means.csv", "text/csv")
+    st.download_button(
+        "Download Clean CSV",
+        data=clean.to_csv(index=False).encode("utf-8"),
+        file_name="cleaned_wearable.csv",
+        mime="text/csv",
+        key="download_clean_csv"
+    )
+    st.download_button(
+        "Download Daily Means CSV",
+        data=m.daily_means.reset_index().to_csv(index=False).encode("utf-8"),
+        file_name="daily_means.csv",
+        mime="text/csv",
+        key="download_daily_means_csv"
+    )
 
 except Exception as e:
     st.error(str(e))
