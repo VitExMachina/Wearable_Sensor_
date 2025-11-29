@@ -1,7 +1,7 @@
 # tests/test_timezone_regression.py
 import pandas as pd
 
-import app as mod  # change if needed
+import wearable_sensor_draft_code_11_03 as mod
 
 def apple_health_df(records):
     return pd.DataFrame(records, columns=["@type", "@creationDate", "@unit", "@value"])

@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import app as mod  # change if your file isn't app.py
+import wearable_sensor_draft_code_11_03 as mod
 
 def tidy_df(**cols):
     ts = pd.date_range("2025-01-01 00:00:00", periods=5, freq="min")

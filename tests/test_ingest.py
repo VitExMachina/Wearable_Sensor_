@@ -2,7 +2,7 @@
 import io
 import pandas as pd
 
-import app as mod  # change if needed
+import wearable_sensor_draft_code_11_03 as mod
 
 def test_read_xml_streaming_minimal():
     # Minimal Apple Health XML with one Record
