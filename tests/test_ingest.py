@@ -19,7 +19,7 @@ def test_read_tabular_big_csv_chunks(tmp_path):
     csv_path = tmp_path / "big.csv"
     rows = 300_000
     df = pd.DataFrame({
-        "timestamp": pd.date_range("2025-01-01", periods=rows, freq="S"),
+        "timestamp": pd.date_range("2025-01-01", periods=rows, freq="s"),
         "heart_rate": 60
     })
     df.to_csv(csv_path, index=False)

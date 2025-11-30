@@ -372,13 +372,35 @@ try:
         if sensor1 and sensor2:
             comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp").copy()
             
-            # Apply normalization if selected
-            if normalize_option == "Z-Score (Standardized)":
-                comparison_data[sensor1] = normalize_zscore(comparison_data[sensor1])
-                comparison_data[sensor2] = normalize_zscore(comparison_data[sensor2])
-                st.caption("📊 Data standardized (z-score) for comparison")
+            # Check if both sensors have data
+            sensor1_has_data = comparison_data[sensor1].notna().any()
+            sensor2_has_data = comparison_data[sensor2].notna().any()
             
-            st.line_chart(comparison_data)
+            if not sensor1_has_data and not sensor2_has_data:
+                st.warning(f"⚠️ Both {sensor1} and {sensor2} have no data in the selected date range.")
+            elif not sensor1_has_data:
+                st.warning(f"⚠️ {sensor1} has no data in the selected date range. Only {sensor2} will be displayed.")
+            elif not sensor2_has_data:
+                st.warning(f"⚠️ {sensor2} has no data in the selected date range. Only {sensor1} will be displayed.")
+            
+            # Only proceed if at least one sensor has data
+            if sensor1_has_data or sensor2_has_data:
+                # Apply normalization if selected
+                if normalize_option == "Z-Score (Standardized)":
+                    if sensor1_has_data:
+                        comparison_data[sensor1] = normalize_zscore(comparison_data[sensor1])
+                    if sensor2_has_data:
+                        comparison_data[sensor2] = normalize_zscore(comparison_data[sensor2])
+                    st.caption("📊 Data standardized (z-score) for comparison")
+                
+                # Display chart - Streamlit will show separate lines for each sensor column
+                st.line_chart(comparison_data)
+                
+                # Show data availability info
+                if sensor1_has_data and sensor2_has_data:
+                    sensor1_count = comparison_data[sensor1].notna().sum()
+                    sensor2_count = comparison_data[sensor2].notna().sum()
+                    st.caption(f"📈 {sensor1}: {sensor1_count} data points | {sensor2}: {sensor2_count} data points")
         else:
             st.info("Please select two sensors to compare.")
     elif len(available_sensors_compare) == 1:
