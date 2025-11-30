@@ -31,4 +31,4 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest tests/ test_wearable_sensor_11_03.py -v --tb=short
+          PYTHONPATH=. pytest tests/ test_wearable_sensor_11_03.py -v --tb=short
