@@ -1,4 +1,4 @@
- # app.py (single-file) — flexible type matching + diagnostics + big-file/cloud ingest
+ #app.py
 
 import streamlit as st
 import pandas as pd
@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 from xml.etree.ElementTree import iterparse
 
-# =========== CORE ===========
+#=========== CORE ===========
 ALLOWED_SENSORS = {
     "heart_rate", "steps", "temperature", "wrist_temperature", "oxygen_saturation",
 }
@@ -62,7 +62,7 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     duration_hours = (t1 - t0).total_seconds()/3600.0 if len(df) else 0.0
     return Metrics(len(df), t0, t1, duration_hours, sens, daily_means, daily_max, resting_hr, step_total, temp_mean, spo2_mean)
 
-# =========== INGEST (big files + cloud) ===========
+#=========== INGEST ===========
 MAX_CHUNK = 100_000
 
 _ALIAS_RAW = {
@@ -149,7 +149,7 @@ def ingest_from_url(url: str) -> pd.DataFrame:
     suffix = Path(url.split("?")[0]).suffix.lower() or ".csv"
     return _normalize_raw_cols(_read_xml_streaming(bio) if suffix == ".xml" else _read_tabular_big(bio, suffix))
 
-# =========== NORMALIZATION FUNCTIONS ===========
+#=========== NORMALIZATION FUNCTIONS ===========
 def normalize_zscore(series: pd.Series) -> pd.Series:
     """Normalize series using z-score (standardization)."""
     mean_val = series.mean()
@@ -158,7 +158,7 @@ def normalize_zscore(series: pd.Series) -> pd.Series:
         return series
     return (series - mean_val) / std_val
 
-# =========== FLEXIBLE RAW → TIDY ===========
+#=========== FLEXIBLE RAW → TIDY ===========
 def _maybe_scale_spo2(series: pd.Series) -> pd.Series:
     med = series.dropna().median()
     return series*100.0 if pd.notna(med) and med < 2 else series
@@ -181,7 +181,7 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
             tidy["oxygen_saturation"] = _maybe_scale_spo2(tidy["oxygen_saturation"])
         return validate_and_clean(tidy)
 
-    # Apple Health raw?
+    #Apple Health raw?
     need = {"@type","@creationDate","@value"}
     if need.issubset(df_raw.columns):
         df = df_raw.rename(columns={"@type":"Biometric_Label","@creationDate":"Date","@value":"Value"})
@@ -192,7 +192,7 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
         df["col"] = df["Biometric_Label"].map(_map_type_to_col)
         df = df.dropna(subset=["col"])
 
-        # Aggregate per-minute per-sensor with appropriate function
+        #Aggregate per-minute per-sensor with appropriate function
         out = None
         for col in df["col"].unique():
             d = df[df["col"] == col]
@@ -204,14 +204,14 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
             raise ValueError("No supported biometric types found in file.")
 
         out = out.reset_index().rename(columns={"minute":"timestamp"}).sort_values("timestamp")
-        # Normalize SpO₂ if present
+        #Normalize SpO₂ if present
         if "oxygen_saturation" in out.columns:
             out["oxygen_saturation"] = _maybe_scale_spo2(out["oxygen_saturation"])
-        # Drop rows where all sensors are NaN
+        #Drop rows where all sensors are NaN
         out = out.dropna(how="all", subset=[c for c in out.columns if c != "timestamp"])
         return validate_and_clean(out)
 
-    # Last attempt: guess a time column
+    #Last attempt: guess a time column
     guess_cols = [c for c in df_raw.columns if "date" in c.lower() or "time" in c.lower()]
     if guess_cols:
         guess = df_raw.rename(columns={guess_cols[0]:"timestamp"})
@@ -220,12 +220,12 @@ def records_to_minute_tidy(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     raise ValueError("Unsupported format. Provide Apple Health export or tidy CSV.")
 
-# =========== UI ===========
+# ===========UI===========
 st.set_page_config(page_title="Wearable Sensor Data Analyzer", layout="wide")
 st.title("⌚ Wearable Sensor Data Analyzer")
 
 
-# Add caching for expensive operations
+#Add caching for expensive operations
 @st.cache_data(max_entries=2, ttl=3600, show_spinner="Processing data...")
 def cached_ingest(source, source_type):
     """Cache ingestion to avoid reprocessing on reruns."""
@@ -268,7 +268,7 @@ if src_mode == "Cloud / storage link" and not cloud_url:
     st.info("Enter a cloud URL to begin."); st.stop()
 
 try:
-    # Use cached ingestion
+    #Use cached ingestion
     if src_mode == "Upload file":
         file_size_mb = len(uploaded.getvalue()) / (1024 * 1024)
         if file_size_mb > 50:
@@ -279,7 +279,7 @@ try:
     else:
         raw = cached_ingest(cloud_url, "url")
 
-    # Optional quick diagnostics: what @type values exist?
+    #Optional quick diagnostics: what @type values exist?
     if show_diag:
         with st.expander("Diagnostics: Top @type values"):
             if "@type" in raw.columns:
@@ -295,9 +295,9 @@ try:
         start_date = st.date_input("Start date")
         end_date   = st.date_input("End date")
 
-    # Use cached transformations
+    #Use cached transformations
     clean = cached_tidy_transform(raw)
-    # Clear raw from memory after processing
+    #Clear raw from memory after processing
     del raw
 
     #date filter (convert to UTC to match clean['timestamp'])
@@ -361,7 +361,7 @@ try:
                 key="sensor2_compare"
             )
         
-        # Normalization option (only Z-Score)
+        #Normalization option (only Z-Score)
         normalize_option = st.radio(
             "Normalization method (for better comparison across different scales):",
             ["None", "Z-Score (Standardized)"],
@@ -372,7 +372,7 @@ try:
         if sensor1 and sensor2:
             comparison_data = clean[["timestamp", sensor1, sensor2]].set_index("timestamp").copy()
             
-            # Check if both sensors have data
+            #Check if both sensors have data
             sensor1_has_data = comparison_data[sensor1].notna().any()
             sensor2_has_data = comparison_data[sensor2].notna().any()
             
@@ -385,7 +385,7 @@ try:
             
             # Only proceed if at least one sensor has data
             if sensor1_has_data or sensor2_has_data:
-                # Apply normalization if selected
+                #Apply normalization if selected
                 if normalize_option == "Z-Score (Standardized)":
                     if sensor1_has_data:
                         comparison_data[sensor1] = normalize_zscore(comparison_data[sensor1])
@@ -393,7 +393,7 @@ try:
                         comparison_data[sensor2] = normalize_zscore(comparison_data[sensor2])
                     st.caption("📊 Data standardized (z-score) for comparison")
                 
-                # Display chart - Streamlit will show separate lines for each sensor column
+                #Display chart Streamlit will show separate lines for each sensor column
                 st.line_chart(comparison_data)
                 
                 # Show data availability info
@@ -409,7 +409,7 @@ try:
         st.info("No sensors available for comparison.")
 
     st.subheader("Daily Averages")
-    # Filter by sensor
+    #Filter by sensor
     available_sensors = [col for col in m.daily_means.columns if col in ALLOWED_SENSORS]
     if available_sensors:
         selected_sensors = st.multiselect(
